@@ -98,6 +98,7 @@ Renderer::~Renderer()
     for (auto s : renderFinishedSemaphores_) vkDestroySemaphore(device_, s, nullptr);
     renderFinishedSemaphores_.clear();
 
+    vkDestroySemaphore(device_, imageAvailableSemaphore_, nullptr);
     vkDestroyFence(device_, inFlightFence_, nullptr);
 
     vkDestroyCommandPool(device_, commandPool_, nullptr);
