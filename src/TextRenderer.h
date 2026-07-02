@@ -17,6 +17,7 @@ struct TextVertex
 {
     float pos[2];
     float uv[2];
+    float colorGlyph;
 };
 
 class TextRenderer
@@ -44,6 +45,7 @@ public:
 
     void setScreenSize(uint32_t width, uint32_t height);
     void setFont(const std::string& fontPath, uint32_t fontPixelSize);
+    void setEmojiFont(const std::string& fontPath);
 
     void drawText(VkCommandBuffer commandBuffer,
                   const std::string& text,
@@ -73,6 +75,8 @@ public:
 
     float measureText(const std::string& text) const;
     float fontAscent() const { return static_cast<float>(fontPixelSize_); }
+    bool hasColorGlyphs() const { return hasColorGlyphs_; }
+    bool hasColorGlyph(uint32_t glyphIndex) const;
 
 private:
     struct Glyph
@@ -87,6 +91,7 @@ private:
     struct ShapedGlyph
     {
         uint32_t glyphIndex;
+        uint32_t emojiGlyphIndex;
         float x;
         float y;
         float width;
@@ -96,6 +101,16 @@ private:
         float advance;
         float uvMin[2];
         float uvMax[2];
+        bool isColorGlyph;
+    };
+
+    struct ColorGlyphInfo
+    {
+        float uvMin[2];
+        float uvMax[2];
+        float size[2];
+        float bearing[2];
+        float advance;
     };
 
     struct PushConstants
@@ -118,7 +133,16 @@ private:
     void ensureVertexBufferCapacity(size_t vertexCount);
     void writeQuad(TextVertex* out,
                    float x, float y, float w, float h,
-                   float u0, float v0, float u1, float v1);
+                   float u0, float v0, float u1, float v1,
+                   float colorGlyph);
+
+    void createColorAtlasImage();
+    void uploadColorAtlasImage();
+    void buildColorAtlas();
+    bool ensureColorGlyph(uint32_t glyphIndex);
+    bool ensureColorGlyphFromFace(uint32_t glyphIndex, FT_Face face);
+    bool probeFaceHasColorGlyphs() const;
+    int probeColrVersion() const;
 
     std::vector<ShapedGlyph> shapeText(const std::string& text) const;
 
@@ -134,7 +158,10 @@ private:
 
     FT_Library ftLibrary_ = nullptr;
     FT_Face ftFace_ = nullptr;
+    FT_Face emojiFace_ = nullptr;
+    std::string emojiFontPath_;
     hb_font_t* hbFont_ = nullptr;
+    int colrVersion_ = 0;
 
     VkImage atlasImage_ = VK_NULL_HANDLE;
     VkDeviceMemory atlasMemory_ = VK_NULL_HANDLE;
@@ -144,7 +171,19 @@ private:
     uint32_t atlasHeight_ = 0;
     std::vector<unsigned char> atlasPixels_;
 
+    VkImage colorAtlasImage_ = VK_NULL_HANDLE;
+    VkDeviceMemory colorAtlasMemory_ = VK_NULL_HANDLE;
+    VkImageView colorAtlasView_ = VK_NULL_HANDLE;
+    VkSampler colorAtlasSampler_ = VK_NULL_HANDLE;
+    std::vector<std::uint8_t> colorAtlasPixels_;
+
     std::unordered_map<uint32_t, Glyph> glyphs_;
+    std::unordered_map<uint32_t, ColorGlyphInfo> colorGlyphs_;
+    bool hasColorGlyphs_ = false;
+    bool colorAtlasDirty_ = false;
+    uint32_t colorPenX_ = 1;
+    uint32_t colorPenY_ = 1;
+    uint32_t colorRowHeight_ = 0;
 
     VkShaderModule vertShader_ = VK_NULL_HANDLE;
     VkShaderModule fragShader_ = VK_NULL_HANDLE;

@@ -10,6 +10,7 @@
 
 #include <hb.h>
 #include <hb-ft.h>
+#include <freetype/tttables.h>
 
 #include "text.vert.spv.h"
 #include "text.frag.spv.h"
@@ -22,6 +23,25 @@ constexpr uint32_t kAtlasWidth = 1024;
 constexpr uint32_t kAtlasHeight = 1024;
 constexpr uint32_t kFirstChar = 32;
 constexpr uint32_t kNumChars = 95;
+
+int probeColrVersionForFace(FT_Face face)
+{
+    FT_ULong length = 0;
+    if (FT_Load_Sfnt_Table(face, FT_MAKE_TAG('C','O','L','R'), 0, nullptr, &length) != 0)
+    {
+        return 0;
+    }
+    std::vector<uint8_t> buf(length);
+    if (FT_Load_Sfnt_Table(face, FT_MAKE_TAG('C','O','L','R'), 0, buf.data(), &length) != 0)
+    {
+        return 0;
+    }
+    if (length < 2) return 0;
+    uint16_t version = (static_cast<uint16_t>(buf[0]) << 8) | static_cast<uint16_t>(buf[1]);
+    if (version == 0x0000) return 1;
+    if (version >= 0x0001) return 2;
+    return 0;
+}
 
 uint32_t findMemoryType(VkPhysicalDevice physicalDevice,
                         uint32_t typeFilter,
@@ -111,9 +131,26 @@ void TextRenderer::init(const InitInfo& info, const std::string& fontPath, uint3
         throw std::runtime_error("failed to create HarfBuzz font");
     }
 
+    colrVersion_ = probeColrVersion();
+    if (colrVersion_ != 0)
+    {
+        std::cerr << "Font COLR version: " << (colrVersion_ == 2 ? "v1" : "v0") << "\n";
+    }
+
+    if (!emojiFontPath_.empty())
+    {
+        setEmojiFont(emojiFontPath_);
+    }
+
     createAtlas(fontPath, fontPixelSize);
     createAtlasImage();
     uploadAtlasImage();
+    buildColorAtlas();
+    createColorAtlasImage();
+    if (!colorAtlasPixels_.empty())
+    {
+        uploadColorAtlasImage();
+    }
     createDescriptorResources();
     createPipeline();
     createRectPipeline();
@@ -197,6 +234,30 @@ void TextRenderer::shutdown()
         rectFragShader_ = VK_NULL_HANDLE;
     }
 
+    if (colorAtlasSampler_ != VK_NULL_HANDLE)
+    {
+        vkDestroySampler(device_, colorAtlasSampler_, nullptr);
+        colorAtlasSampler_ = VK_NULL_HANDLE;
+    }
+
+    if (colorAtlasView_ != VK_NULL_HANDLE)
+    {
+        vkDestroyImageView(device_, colorAtlasView_, nullptr);
+        colorAtlasView_ = VK_NULL_HANDLE;
+    }
+
+    if (colorAtlasImage_ != VK_NULL_HANDLE)
+    {
+        vkDestroyImage(device_, colorAtlasImage_, nullptr);
+        colorAtlasImage_ = VK_NULL_HANDLE;
+    }
+
+    if (colorAtlasMemory_ != VK_NULL_HANDLE)
+    {
+        vkFreeMemory(device_, colorAtlasMemory_, nullptr);
+        colorAtlasMemory_ = VK_NULL_HANDLE;
+    }
+
     if (atlasSampler_ != VK_NULL_HANDLE)
     {
         vkDestroySampler(device_, atlasSampler_, nullptr);
@@ -219,6 +280,12 @@ void TextRenderer::shutdown()
     {
         vkFreeMemory(device_, atlasMemory_, nullptr);
         atlasMemory_ = VK_NULL_HANDLE;
+    }
+
+    if (emojiFace_)
+    {
+        FT_Done_Face(emojiFace_);
+        emojiFace_ = nullptr;
     }
 
     if (ftFace_)
@@ -270,8 +337,20 @@ void TextRenderer::setFont(const std::string& fontPath, uint32_t fontPixelSize)
         throw std::runtime_error("failed to create HarfBuzz font");
     }
 
+    colrVersion_ = probeColrVersion();
+
+    if (!emojiFontPath_.empty() && !emojiFace_)
+    {
+        setEmojiFont(emojiFontPath_);
+    }
+
     createAtlas(fontPath, fontPixelSize);
     uploadAtlasImage();
+    buildColorAtlas();
+    if (!colorAtlasPixels_.empty())
+    {
+        uploadColorAtlasImage();
+    }
 }
 
 void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSize)
@@ -279,10 +358,14 @@ void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSi
     atlasWidth_ = kAtlasWidth;
     atlasHeight_ = kAtlasHeight;
     atlasPixels_.assign(atlasWidth_ * atlasHeight_, 0);
+    colorAtlasPixels_.assign(kAtlasWidth * kAtlasHeight * 4, 0);
 
     uint32_t penX = 1;
     uint32_t penY = 1;
     uint32_t rowHeight = 0;
+    uint32_t colorPenX = 1;
+    uint32_t colorPenY = 1;
+    uint32_t colorRowHeight = 0;
 
     for (uint32_t c = 0; c < kNumChars; ++c)
     {
@@ -348,6 +431,482 @@ void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSi
         info.uvMax[0] = static_cast<float>(penX + w) / static_cast<float>(atlasWidth_);
         info.uvMax[1] = static_cast<float>(penY + h) / static_cast<float>(atlasHeight_);
         glyphs_[glyphIndex] = info;
+
+        penX += w + 1;
+        if (h + 1 > rowHeight) rowHeight = h + 1;
+
+        if (FT_Load_Glyph(ftFace_, glyphIndex, FT_LOAD_RENDER | FT_LOAD_COLOR) != 0)
+        {
+            continue;
+        }
+
+        const FT_GlyphSlot cg = ftFace_->glyph;
+        if (cg->bitmap.pixel_mode != FT_PIXEL_MODE_BGRA)
+        {
+            continue;
+        }
+
+        const uint32_t cw = cg->bitmap.width;
+        const uint32_t ch = cg->bitmap.rows;
+        if (cw == 0 || ch == 0)
+        {
+            continue;
+        }
+
+        hasColorGlyphs_ = true;
+
+        if (colorPenX + cw + 1 > kAtlasWidth)
+        {
+            colorPenY += colorRowHeight + 1;
+            colorPenX = 1;
+            colorRowHeight = 0;
+        }
+
+        if (colorPenY + ch + 1 > kAtlasHeight)
+        {
+            throw std::runtime_error("color glyph atlas overflow");
+        }
+
+        for (uint32_t row = 0; row < ch; ++row)
+        {
+            const std::uint8_t* src = reinterpret_cast<const std::uint8_t*>(cg->bitmap.buffer) + static_cast<intptr_t>(row) * cg->bitmap.pitch;
+            std::uint8_t* dst = colorAtlasPixels_.data() + ((colorPenY + row) * kAtlasWidth + colorPenX) * 4;
+            std::memcpy(dst, src, static_cast<size_t>(cw) * 4);
+        }
+
+        ColorGlyphInfo colorInfo{};
+        colorInfo.size[0] = static_cast<float>(cw);
+        colorInfo.size[1] = static_cast<float>(ch);
+        colorInfo.bearing[0] = static_cast<float>(cg->bitmap_left);
+        colorInfo.bearing[1] = static_cast<float>(cg->bitmap_top);
+        colorInfo.advance = static_cast<float>(cg->advance.x) / 64.0f;
+        colorInfo.uvMin[0] = static_cast<float>(colorPenX) / static_cast<float>(kAtlasWidth);
+        colorInfo.uvMin[1] = static_cast<float>(colorPenY) / static_cast<float>(kAtlasHeight);
+        colorInfo.uvMax[0] = static_cast<float>(colorPenX + cw) / static_cast<float>(kAtlasWidth);
+        colorInfo.uvMax[1] = static_cast<float>(colorPenY + ch) / static_cast<float>(kAtlasHeight);
+        colorGlyphs_[glyphIndex] = colorInfo;
+
+        colorPenX += cw + 1;
+        if (ch + 1 > colorRowHeight) colorRowHeight = ch + 1;
+    }
+}
+
+bool TextRenderer::probeFaceHasColorGlyphs() const
+{
+    if (probeColrVersion() != 0) return true;
+    const auto hasTable = [&](uint32_t tag) {
+        return FT_Load_Sfnt_Table(ftFace_, tag, 0, nullptr, nullptr) == 0;
+    };
+    return hasTable(FT_MAKE_TAG('C', 'B', 'D', 'T')) ||
+           hasTable(FT_MAKE_TAG('S', 'V', 'G', ' '));
+}
+
+int TextRenderer::probeColrVersion() const
+{
+    return probeColrVersionForFace(ftFace_);
+}
+
+void TextRenderer::setEmojiFont(const std::string& fontPath)
+{
+    if (emojiFace_)
+    {
+        FT_Done_Face(emojiFace_);
+        emojiFace_ = nullptr;
+    }
+    emojiFontPath_ = fontPath;
+
+    if (FT_New_Face(ftLibrary_, fontPath.c_str(), 0, &emojiFace_) != 0)
+    {
+        std::cerr << "Warning: failed to load emoji fallback font: " << fontPath << "\n";
+        emojiFace_ = nullptr;
+        return;
+    }
+
+    FT_Set_Pixel_Sizes(emojiFace_, 0, fontPixelSize_);
+
+    int emojiColrVer = probeColrVersionForFace(emojiFace_);
+    if (emojiColrVer != 0)
+    {
+        std::cerr << "Emoji font COLR version: " << (emojiColrVer == 2 ? "v1" : "v0") << "\n";
+    }
+}
+
+bool TextRenderer::hasColorGlyph(uint32_t glyphIndex) const
+{
+    if (!hasColorGlyphs_)
+    {
+        return false;
+    }
+    return colorGlyphs_.find(glyphIndex) != colorGlyphs_.end();
+}
+
+bool TextRenderer::ensureColorGlyph(uint32_t glyphIndex)
+{
+    if (colorGlyphs_.find(glyphIndex) != colorGlyphs_.end())
+    {
+        return true;
+    }
+
+    if (FT_Load_Glyph(ftFace_, glyphIndex, FT_LOAD_RENDER | FT_LOAD_COLOR) != 0)
+    {
+        return false;
+    }
+
+    const FT_GlyphSlot g = ftFace_->glyph;
+    if (g->bitmap.pixel_mode != FT_PIXEL_MODE_BGRA)
+    {
+        return false;
+    }
+
+    const uint32_t w = g->bitmap.width;
+    const uint32_t h = g->bitmap.rows;
+    if (w == 0 || h == 0)
+    {
+        return false;
+    }
+
+    if (colorPenX_ + w + 1 > kAtlasWidth)
+    {
+        colorPenY_ += colorRowHeight_ + 1;
+        colorPenX_ = 1;
+        colorRowHeight_ = 0;
+    }
+
+    if (colorPenY_ + h + 1 > kAtlasHeight)
+    {
+        return false;
+    }
+
+    for (uint32_t row = 0; row < h; ++row)
+    {
+        const std::uint8_t* src = reinterpret_cast<const std::uint8_t*>(g->bitmap.buffer) + static_cast<intptr_t>(row) * g->bitmap.pitch;
+        std::uint8_t* dst = colorAtlasPixels_.data() + ((colorPenY_ + row) * kAtlasWidth + colorPenX_) * 4;
+        std::memcpy(dst, src, static_cast<size_t>(w) * 4);
+    }
+
+    ColorGlyphInfo info{};
+    info.size[0] = static_cast<float>(w);
+    info.size[1] = static_cast<float>(h);
+    info.bearing[0] = static_cast<float>(g->bitmap_left);
+    info.bearing[1] = static_cast<float>(g->bitmap_top);
+    info.advance = static_cast<float>(g->advance.x) / 64.0f;
+    info.uvMin[0] = static_cast<float>(colorPenX_) / static_cast<float>(kAtlasWidth);
+    info.uvMin[1] = static_cast<float>(colorPenY_) / static_cast<float>(kAtlasHeight);
+    info.uvMax[0] = static_cast<float>(colorPenX_ + w) / static_cast<float>(kAtlasWidth);
+    info.uvMax[1] = static_cast<float>(colorPenY_ + h) / static_cast<float>(kAtlasHeight);
+    colorGlyphs_[glyphIndex] = info;
+
+    colorPenX_ += w + 1;
+    if (h + 1 > colorRowHeight_) colorRowHeight_ = h + 1;
+    colorAtlasDirty_ = true;
+
+    return true;
+}
+
+bool TextRenderer::ensureColorGlyphFromFace(uint32_t glyphIndex, FT_Face face)
+{
+    if (colorGlyphs_.find(glyphIndex) != colorGlyphs_.end())
+    {
+        return true;
+    }
+
+    if (FT_Load_Glyph(face, glyphIndex, FT_LOAD_RENDER | FT_LOAD_COLOR) != 0)
+    {
+        return false;
+    }
+
+    const FT_GlyphSlot g = face->glyph;
+    if (g->bitmap.pixel_mode != FT_PIXEL_MODE_BGRA)
+    {
+        return false;
+    }
+
+    const uint32_t w = g->bitmap.width;
+    const uint32_t h = g->bitmap.rows;
+    if (w == 0 || h == 0)
+    {
+        return false;
+    }
+
+    if (colorPenX_ + w + 1 > kAtlasWidth)
+    {
+        colorPenY_ += colorRowHeight_ + 1;
+        colorPenX_ = 1;
+        colorRowHeight_ = 0;
+    }
+
+    if (colorPenY_ + h + 1 > kAtlasHeight)
+    {
+        return false;
+    }
+
+    for (uint32_t row = 0; row < h; ++row)
+    {
+        const std::uint8_t* src = reinterpret_cast<const std::uint8_t*>(g->bitmap.buffer) + static_cast<intptr_t>(row) * g->bitmap.pitch;
+        std::uint8_t* dst = colorAtlasPixels_.data() + ((colorPenY_ + row) * kAtlasWidth + colorPenX_) * 4;
+        std::memcpy(dst, src, static_cast<size_t>(w) * 4);
+    }
+
+    ColorGlyphInfo info{};
+    info.size[0] = static_cast<float>(w);
+    info.size[1] = static_cast<float>(h);
+    info.bearing[0] = static_cast<float>(g->bitmap_left);
+    info.bearing[1] = static_cast<float>(g->bitmap_top);
+    info.advance = static_cast<float>(g->advance.x) / 64.0f;
+    info.uvMin[0] = static_cast<float>(colorPenX_) / static_cast<float>(kAtlasWidth);
+    info.uvMin[1] = static_cast<float>(colorPenY_) / static_cast<float>(kAtlasHeight);
+    info.uvMax[0] = static_cast<float>(colorPenX_ + w) / static_cast<float>(kAtlasWidth);
+    info.uvMax[1] = static_cast<float>(colorPenY_ + h) / static_cast<float>(kAtlasHeight);
+    colorGlyphs_[glyphIndex] = info;
+
+    colorPenX_ += w + 1;
+    if (h + 1 > colorRowHeight_) colorRowHeight_ = h + 1;
+    colorAtlasDirty_ = true;
+
+    return true;
+}
+
+void TextRenderer::createColorAtlasImage()
+{
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    imageInfo.extent.width = kAtlasWidth;
+    imageInfo.extent.height = kAtlasHeight;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+
+    if (vkCreateImage(device_, &imageInfo, nullptr, &colorAtlasImage_) != VK_SUCCESS)
+    {
+        throw std::runtime_error("failed to create color atlas image");
+    }
+
+    VkMemoryRequirements memReqs;
+    vkGetImageMemoryRequirements(device_, colorAtlasImage_, &memReqs);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memReqs.size;
+    allocInfo.memoryTypeIndex = findMemoryType(physicalDevice_, memReqs.memoryTypeBits,
+                                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    if (vkAllocateMemory(device_, &allocInfo, nullptr, &colorAtlasMemory_) != VK_SUCCESS)
+    {
+        throw std::runtime_error("failed to allocate color atlas memory");
+    }
+
+    vkBindImageMemory(device_, colorAtlasImage_, colorAtlasMemory_, 0);
+
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = colorAtlasImage_;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    if (vkCreateImageView(device_, &viewInfo, nullptr, &colorAtlasView_) != VK_SUCCESS)
+    {
+        throw std::runtime_error("failed to create color atlas view");
+    }
+
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_NEAREST;
+    samplerInfo.minFilter = VK_FILTER_NEAREST;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    samplerInfo.maxAnisotropy = 1.0f;
+    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+
+    if (vkCreateSampler(device_, &samplerInfo, nullptr, &colorAtlasSampler_) != VK_SUCCESS)
+    {
+        throw std::runtime_error("failed to create color atlas sampler");
+    }
+}
+
+void TextRenderer::uploadColorAtlasImage()
+{
+    if (colorAtlasPixels_.empty()) return;
+
+    VkDeviceSize imageSize = static_cast<VkDeviceSize>(kAtlasWidth) * kAtlasHeight * 4;
+
+    VkBuffer stagingBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+    createBuffer(physicalDevice_, device_, imageSize,
+                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 stagingBuffer, stagingMemory);
+
+    void* data = nullptr;
+    vkMapMemory(device_, stagingMemory, 0, imageSize, 0, &data);
+    std::memcpy(data, colorAtlasPixels_.data(), static_cast<size_t>(imageSize));
+    vkUnmapMemory(device_, stagingMemory);
+
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = commandPool_;
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    vkAllocateCommandBuffers(device_, &allocInfo, &cmd);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    VkImageMemoryBarrier toTransfer{};
+    toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    toTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toTransfer.image = colorAtlasImage_;
+    toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    toTransfer.subresourceRange.levelCount = 1;
+    toTransfer.subresourceRange.layerCount = 1;
+    toTransfer.srcAccessMask = 0;
+    toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+
+    VkBufferImageCopy region{};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {0, 0, 0};
+    region.imageExtent = {kAtlasWidth, kAtlasHeight, 1};
+
+    vkCmdCopyBufferToImage(cmd, stagingBuffer, colorAtlasImage_,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    VkImageMemoryBarrier toShader{};
+    toShader.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    toShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toShader.image = colorAtlasImage_;
+    toShader.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    toShader.subresourceRange.levelCount = 1;
+    toShader.subresourceRange.layerCount = 1;
+    toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &toShader);
+
+    vkEndCommandBuffer(cmd);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+
+    vkQueueSubmit(graphicsQueue_, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(graphicsQueue_);
+
+    vkFreeCommandBuffers(device_, commandPool_, 1, &cmd);
+    vkDestroyBuffer(device_, stagingBuffer, nullptr);
+    vkFreeMemory(device_, stagingMemory, nullptr);
+
+    colorAtlasPixels_.clear();
+    colorAtlasPixels_.shrink_to_fit();
+    colorPenX_ = 1;
+    colorPenY_ = 1;
+    colorRowHeight_ = 0;
+    colorAtlasDirty_ = false;
+}
+
+void TextRenderer::buildColorAtlas()
+{
+    colorAtlasPixels_.assign(kAtlasWidth * kAtlasHeight * 4, 0);
+    colorGlyphs_.clear();
+    hasColorGlyphs_ = false;
+
+    uint32_t penX = 1;
+    uint32_t penY = 1;
+    uint32_t rowHeight = 0;
+
+    for (uint32_t c = 0; c < kNumChars; ++c)
+    {
+        const uint32_t charCode = kFirstChar + c;
+        hb_codepoint_t glyphIndex = 0;
+        if (!hb_font_get_nominal_glyph(hbFont_, charCode, &glyphIndex))
+        {
+            continue;
+        }
+
+        if (FT_Load_Glyph(ftFace_, glyphIndex, FT_LOAD_RENDER | FT_LOAD_COLOR) != 0)
+        {
+            continue;
+        }
+
+        const FT_GlyphSlot g = ftFace_->glyph;
+        if (g->bitmap.pixel_mode != FT_PIXEL_MODE_BGRA)
+        {
+            continue;
+        }
+
+        const uint32_t w = g->bitmap.width;
+        const uint32_t h = g->bitmap.rows;
+        if (w == 0 || h == 0)
+        {
+            continue;
+        }
+
+        hasColorGlyphs_ = true;
+
+        if (penX + w + 1 > kAtlasWidth)
+        {
+            penY += rowHeight + 1;
+            penX = 1;
+            rowHeight = 0;
+        }
+
+        if (penY + h + 1 > kAtlasHeight)
+        {
+            throw std::runtime_error("color glyph atlas overflow");
+        }
+
+        for (uint32_t row = 0; row < h; ++row)
+        {
+            const std::uint8_t* src = reinterpret_cast<const std::uint8_t*>(g->bitmap.buffer) + static_cast<intptr_t>(row) * g->bitmap.pitch;
+            std::uint8_t* dst = colorAtlasPixels_.data() + ((penY + row) * kAtlasWidth + penX) * 4;
+            std::memcpy(dst, src, static_cast<size_t>(w) * 4);
+        }
+
+        ColorGlyphInfo info{};
+        info.size[0] = static_cast<float>(w);
+        info.size[1] = static_cast<float>(h);
+        info.bearing[0] = static_cast<float>(g->bitmap_left);
+        info.bearing[1] = static_cast<float>(g->bitmap_top);
+        info.advance = static_cast<float>(g->advance.x) / 64.0f;
+        info.uvMin[0] = static_cast<float>(penX) / static_cast<float>(kAtlasWidth);
+        info.uvMin[1] = static_cast<float>(penY) / static_cast<float>(kAtlasHeight);
+        info.uvMax[0] = static_cast<float>(penX + w) / static_cast<float>(kAtlasWidth);
+        info.uvMax[1] = static_cast<float>(penY + h) / static_cast<float>(kAtlasHeight);
+        colorGlyphs_[glyphIndex] = info;
 
         penX += w + 1;
         if (h + 1 > rowHeight) rowHeight = h + 1;
@@ -522,17 +1081,26 @@ void TextRenderer::uploadAtlasImage()
 
 void TextRenderer::createDescriptorResources()
 {
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding = 0;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    binding.pImmutableSamplers = nullptr;
+    VkDescriptorSetLayoutBinding monoBinding{};
+    monoBinding.binding = 0;
+    monoBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    monoBinding.descriptorCount = 1;
+    monoBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    monoBinding.pImmutableSamplers = nullptr;
+
+    VkDescriptorSetLayoutBinding colorBinding{};
+    colorBinding.binding = 1;
+    colorBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    colorBinding.descriptorCount = 1;
+    colorBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    colorBinding.pImmutableSamplers = nullptr;
+
+    VkDescriptorSetLayoutBinding bindings[] = { monoBinding, colorBinding };
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &binding;
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
 
     if (vkCreateDescriptorSetLayout(device_, &layoutInfo, nullptr, &descriptorSetLayout_) != VK_SUCCESS)
     {
@@ -541,7 +1109,7 @@ void TextRenderer::createDescriptorResources()
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 1;
+    poolSize.descriptorCount = 2;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -565,21 +1133,34 @@ void TextRenderer::createDescriptorResources()
         throw std::runtime_error("failed to allocate descriptor set");
     }
 
-    VkDescriptorImageInfo imageInfo{};
-    imageInfo.sampler = atlasSampler_;
-    imageInfo.imageView = atlasView_;
-    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorImageInfo atlasImageInfo{};
+    atlasImageInfo.sampler = atlasSampler_;
+    atlasImageInfo.imageView = atlasView_;
+    atlasImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = descriptorSet_;
-    write.dstBinding = 0;
-    write.dstArrayElement = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = &imageInfo;
+    VkDescriptorImageInfo colorAtlasImageInfo{};
+    colorAtlasImageInfo.sampler = hasColorGlyphs_ ? colorAtlasSampler_ : atlasSampler_;
+    colorAtlasImageInfo.imageView = hasColorGlyphs_ ? colorAtlasView_ : atlasView_;
+    colorAtlasImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    VkWriteDescriptorSet write[2]{};
+    write[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write[0].dstSet = descriptorSet_;
+    write[0].dstBinding = 0;
+    write[0].dstArrayElement = 0;
+    write[0].descriptorCount = 1;
+    write[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write[0].pImageInfo = &atlasImageInfo;
+
+    write[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write[1].dstSet = descriptorSet_;
+    write[1].dstBinding = 1;
+    write[1].dstArrayElement = 0;
+    write[1].descriptorCount = 1;
+    write[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write[1].pImageInfo = &colorAtlasImageInfo;
+
+    vkUpdateDescriptorSets(device_, 2, write, 0, nullptr);
 }
 
 void TextRenderer::createPipeline()
@@ -619,7 +1200,7 @@ void TextRenderer::createPipeline()
     binding.stride = sizeof(TextVertex);
     binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    VkVertexInputAttributeDescription attrs[2]{};
+    VkVertexInputAttributeDescription attrs[3]{};
     attrs[0].location = 0;
     attrs[0].binding = 0;
     attrs[0].format = VK_FORMAT_R32G32_SFLOAT;
@@ -628,12 +1209,16 @@ void TextRenderer::createPipeline()
     attrs[1].binding = 0;
     attrs[1].format = VK_FORMAT_R32G32_SFLOAT;
     attrs[1].offset = offsetof(TextVertex, uv);
+    attrs[2].location = 2;
+    attrs[2].binding = 0;
+    attrs[2].format = VK_FORMAT_R32_SFLOAT;
+    attrs[2].offset = offsetof(TextVertex, colorGlyph);
 
     VkPipelineVertexInputStateCreateInfo vertexInput{};
     vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertexInput.vertexBindingDescriptionCount = 1;
     vertexInput.pVertexBindingDescriptions = &binding;
-    vertexInput.vertexAttributeDescriptionCount = 2;
+    vertexInput.vertexAttributeDescriptionCount = 3;
     vertexInput.pVertexAttributeDescriptions = attrs;
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
@@ -752,7 +1337,7 @@ void TextRenderer::createRectPipeline()
     binding.stride = sizeof(TextVertex);
     binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    VkVertexInputAttributeDescription attrs[2]{};
+    VkVertexInputAttributeDescription attrs[3]{};
     attrs[0].location = 0;
     attrs[0].binding = 0;
     attrs[0].format = VK_FORMAT_R32G32_SFLOAT;
@@ -761,12 +1346,16 @@ void TextRenderer::createRectPipeline()
     attrs[1].binding = 0;
     attrs[1].format = VK_FORMAT_R32G32_SFLOAT;
     attrs[1].offset = offsetof(TextVertex, uv);
+    attrs[2].location = 2;
+    attrs[2].binding = 0;
+    attrs[2].format = VK_FORMAT_R32_SFLOAT;
+    attrs[2].offset = offsetof(TextVertex, colorGlyph);
 
     VkPipelineVertexInputStateCreateInfo vertexInput{};
     vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertexInput.vertexBindingDescriptionCount = 1;
     vertexInput.pVertexBindingDescriptions = &binding;
-    vertexInput.vertexAttributeDescriptionCount = 2;
+    vertexInput.vertexAttributeDescriptionCount = 3;
     vertexInput.pVertexAttributeDescriptions = attrs;
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
@@ -916,9 +1505,11 @@ std::vector<TextRenderer::ShapedGlyph> TextRenderer::shapeText(const std::string
 
         ShapedGlyph sg{};
         sg.glyphIndex = info.codepoint;
+        sg.emojiGlyphIndex = 0;
         sg.x = penX + static_cast<float>(pos.x_offset) / 64.0f;
         sg.y = static_cast<float>(pos.y_offset) / 64.0f;
         sg.advance = static_cast<float>(pos.x_advance) / 64.0f;
+        sg.isColorGlyph = false;
 
         auto it = glyphs_.find(sg.glyphIndex);
         if (it != glyphs_.end())
@@ -933,16 +1524,38 @@ std::vector<TextRenderer::ShapedGlyph> TextRenderer::shapeText(const std::string
             sg.uvMax[0] = gl.uvMax[0];
             sg.uvMax[1] = gl.uvMax[1];
         }
-        else
+        else if (emojiFace_)
         {
-            sg.width = 0.0f;
-            sg.height = 0.0f;
-            sg.bearingX = 0.0f;
-            sg.bearingY = 0.0f;
-            sg.uvMin[0] = 0.0f;
-            sg.uvMin[1] = 0.0f;
-            sg.uvMax[0] = 0.0f;
-            sg.uvMax[1] = 0.0f;
+            FT_UInt emojiGid = FT_Get_Char_Index(emojiFace_, info.codepoint);
+            if (emojiGid != 0)
+            {
+                if (FT_Load_Glyph(emojiFace_, emojiGid, FT_LOAD_RENDER) == 0)
+                {
+                    const FT_GlyphSlot eg = emojiFace_->glyph;
+                    sg.width = static_cast<float>(eg->bitmap.width);
+                    sg.height = static_cast<float>(eg->bitmap.rows);
+                    sg.bearingX = static_cast<float>(eg->bitmap_left);
+                    sg.bearingY = static_cast<float>(eg->bitmap_top);
+                    sg.advance = static_cast<float>(eg->advance.x) / 64.0f;
+                    sg.emojiGlyphIndex = emojiGid;
+                }
+            }
+        }
+        else if (emojiFace_)
+        {
+            hb_codepoint_t emojiGid = 0;
+            if (hb_font_get_nominal_glyph(hbFont_, info.codepoint, &emojiGid) == 0)
+            {
+                if (FT_Load_Glyph(emojiFace_, sg.glyphIndex, FT_LOAD_RENDER) == 0)
+                {
+                    const FT_GlyphSlot eg = emojiFace_->glyph;
+                    sg.width = static_cast<float>(eg->bitmap.width);
+                    sg.height = static_cast<float>(eg->bitmap.rows);
+                    sg.bearingX = static_cast<float>(eg->bitmap_left);
+                    sg.bearingY = static_cast<float>(eg->bitmap_top);
+                    sg.advance = static_cast<float>(eg->advance.x) / 64.0f;
+                }
+            }
         }
 
         result.push_back(sg);
@@ -978,25 +1591,84 @@ void TextRenderer::drawText(VkCommandBuffer commandBuffer,
     std::vector<ShapedGlyph> shaped = shapeText(text);
     if (shaped.empty()) return;
 
+    for (auto& sg : shaped)
+    {
+        if (sg.isColorGlyph) continue;
+        bool inColorAtlas = colorGlyphs_.find(sg.glyphIndex) != colorGlyphs_.end();
+        if (!inColorAtlas && hasColorGlyphs_)
+        {
+            inColorAtlas = ensureColorGlyph(sg.glyphIndex);
+        }
+        if (inColorAtlas)
+        {
+            const ColorGlyphInfo& cl = colorGlyphs_.at(sg.glyphIndex);
+            sg.width = cl.size[0];
+            sg.height = cl.size[1];
+            sg.bearingX = cl.bearing[0];
+            sg.bearingY = cl.bearing[1];
+            sg.uvMin[0] = cl.uvMin[0];
+            sg.uvMin[1] = cl.uvMin[1];
+            sg.uvMax[0] = cl.uvMax[0];
+            sg.uvMax[1] = cl.uvMax[1];
+            sg.isColorGlyph = true;
+        }
+    }
+
     ensureVertexBufferCapacity(shaped.size() * 6);
 
     auto* out = static_cast<TextVertex*>(vertexBufferMapped_);
     size_t vertexCount = 0;
 
-    for (const auto& sg : shaped)
+    for (auto& sg : shaped)
     {
         if (sg.width <= 0.0f || sg.height <= 0.0f) continue;
+
+        if (!sg.isColorGlyph)
+        {
+            bool inColorAtlas = false;
+            uint32_t colorKey = sg.glyphIndex;
+            if (sg.emojiGlyphIndex != 0 && emojiFace_)
+            {
+                inColorAtlas = ensureColorGlyphFromFace(sg.emojiGlyphIndex, emojiFace_);
+                if (inColorAtlas) colorKey = sg.emojiGlyphIndex;
+            }
+            if (!inColorAtlas && hasColorGlyphs_)
+            {
+                inColorAtlas = ensureColorGlyph(sg.glyphIndex);
+                if (inColorAtlas) colorKey = sg.glyphIndex;
+            }
+            if (inColorAtlas)
+            {
+                const ColorGlyphInfo& cl = colorGlyphs_.at(colorKey);
+                sg.width = cl.size[0];
+                sg.height = cl.size[1];
+                sg.bearingX = cl.bearing[0];
+                sg.bearingY = cl.bearing[1];
+                sg.uvMin[0] = cl.uvMin[0];
+                sg.uvMin[1] = cl.uvMin[1];
+                sg.uvMax[0] = cl.uvMax[0];
+                sg.uvMax[1] = cl.uvMax[1];
+                sg.isColorGlyph = true;
+            }
+        }
 
         const float x0 = x + sg.x + sg.bearingX;
         const float y0 = y + sg.y - sg.bearingY;
         const float w = sg.width;
         const float h = sg.height;
         writeQuad(out + vertexCount, x0, y0, w, h,
-                  sg.uvMin[0], sg.uvMin[1], sg.uvMax[0], sg.uvMax[1]);
+                  sg.uvMin[0], sg.uvMin[1], sg.uvMax[0], sg.uvMax[1],
+                  sg.isColorGlyph ? 1.0f : 0.0f);
         vertexCount += 6;
     }
 
     if (vertexCount == 0) return;
+
+    if (colorAtlasDirty_)
+    {
+        uploadColorAtlasImage();
+        colorAtlasDirty_ = false;
+    }
 
     PushConstants pc{};
     pc.screenSize[0] = static_cast<float>(screenWidth_);
@@ -1039,20 +1711,21 @@ void TextRenderer::drawCenteredText(VkCommandBuffer commandBuffer,
 
 void TextRenderer::writeQuad(TextVertex* out,
                              float x, float y, float w, float h,
-                             float u0, float v0, float u1, float v1)
+                             float u0, float v0, float u1, float v1,
+                             float colorGlyph)
 {
     const float x0 = x;
     const float y0 = y;
     const float x1 = x + w;
     const float y1 = y + h;
 
-    out[0] = {{x0, y0}, {u0, v0}};
-    out[1] = {{x1, y0}, {u1, v0}};
-    out[2] = {{x1, y1}, {u1, v1}};
+    out[0] = {{x0, y0}, {u0, v0}, colorGlyph};
+    out[1] = {{x1, y0}, {u1, v0}, colorGlyph};
+    out[2] = {{x1, y1}, {u1, v1}, colorGlyph};
 
-    out[3] = {{x0, y0}, {u0, v0}};
-    out[4] = {{x1, y1}, {u1, v1}};
-    out[5] = {{x0, y1}, {u0, v1}};
+    out[3] = {{x0, y0}, {u0, v0}, colorGlyph};
+    out[4] = {{x1, y1}, {u1, v1}, colorGlyph};
+    out[5] = {{x0, y1}, {u0, v1}, colorGlyph};
 }
 
 void TextRenderer::drawRect(VkCommandBuffer commandBuffer,
@@ -1068,7 +1741,7 @@ void TextRenderer::drawRect(VkCommandBuffer commandBuffer,
     ensureVertexBufferCapacity(6);
 
     auto* out = static_cast<TextVertex*>(vertexBufferMapped_);
-    writeQuad(out, x, y, w, h, 0.0f, 0.0f, 0.0f, 0.0f);
+    writeQuad(out, x, y, w, h, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
 
     PushConstants pc{};
     pc.screenSize[0] = static_cast<float>(screenWidth_);

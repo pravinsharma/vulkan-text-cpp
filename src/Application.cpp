@@ -74,7 +74,10 @@ void Application::initVulkan()
         {"C:/Windows/Fonts/consola.ttf",         "Consolas"},
         {"C:/Windows/Fonts/comic.ttf",           "Comic Sans MS"},
         {"C:/Windows/Fonts/impact.ttf",         "Impact"},
+        {"C:/Windows/Fonts/seguiemj.ttf",       "Segoe UI Emoji"},
     };
+
+    const std::string kEmojiFontPath = "C:/Windows/Fonts/seguiemj.ttf";
 
     createInstance();
     createSurface();
@@ -97,8 +100,10 @@ void Application::initVulkan()
     info.screenWidth = swapchainExtent_.width;
     info.screenHeight = swapchainExtent_.height;
     textRenderer_.init(info, fonts_[currentFontIndex_].path, kFontPixelSize);
+    textRenderer_.setEmojiFont(kEmojiFontPath);
 
     uiRenderer_.init(info, "C:/Windows/Fonts/segoeui.ttf", kUiFontPixelSize);
+    uiRenderer_.setEmojiFont(kEmojiFontPath);
 }
 
 void Application::mainLoop()
@@ -184,7 +189,7 @@ void Application::drawFrame()
         const float H = static_cast<float>(swapchainExtent_.height);
         const float x = (static_cast<float>(swapchainExtent_.width) - textWidth) * 0.5f;
         const float y = (H - ascent) * 0.5f;
-        textRenderer_.drawText(cmd, kText, x, y, 1.0f, 1.0f, 1.0f, 1.0f);
+        textRenderer_.drawText(cmd, std::string(reinterpret_cast<const char*>(u8"Hello \U0001F600 Vulkan!")), x, y, 1.0f, 1.0f, 1.0f, 1.0f);
     }
 
     renderUi(cmd, swapchainExtent_.width, swapchainExtent_.height);
