@@ -23,50 +23,60 @@ constexpr int kSdfSpread = 4;
 
 void computeGlyphSDF(unsigned char* data, int width, int height, int spread)
 {
-    struct Point { int x; int y; };
-    std::vector<Point> boundary;
+    constexpr float kBig = 1e20f;
+    std::vector<float> dist(static_cast<size_t>(width) * height, kBig);
+
+    auto inside = [&](int x, int y) {
+        return x >= 0 && x < width && y >= 0 && y < height && data[y * width + x] > 127;
+    };
 
     for (int y = 0; y < height; ++y)
     {
         for (int x = 0; x < width; ++x)
         {
-            bool inside = data[y * width + x] > 127;
-            bool isBoundary = false;
-            for (int dy = -1; dy <= 1 && !isBoundary; ++dy)
-            {
-                for (int dx = -1; dx <= 1 && !isBoundary; ++dx)
-                {
-                    if (dx == 0 && dy == 0) continue;
-                    int nx = x + dx;
-                    int ny = y + dy;
-                    bool outside = nx < 0 || nx >= width || ny < 0 || ny >= height || data[ny * width + nx] <= 127;
-                    if (inside && outside) isBoundary = true;
-                }
-            }
-            if (isBoundary) boundary.push_back({x, y});
+            if (!inside(x, y)) continue;
+            bool edge = !inside(x - 1, y) || !inside(x + 1, y) ||
+                        !inside(x, y - 1) || !inside(x, y + 1);
+            if (edge) dist[y * width + x] = 0.0f;
         }
     }
 
-    if (boundary.empty()) return;
+    for (int y = 0; y < height; ++y)
+    {
+        for (int x = 0; x < width; ++x)
+        {
+            float d = dist[y * width + x];
+            if (x > 0) d = std::min(d, dist[y * width + (x - 1)] + 1.0f);
+            if (y > 0) d = std::min(d, dist[(y - 1) * width + x] + 1.0f);
+            if (x > 0 && y > 0) d = std::min(d, dist[(y - 1) * width + (x - 1)] + 1.4142135623730951f);
+            if (x + 1 < width && y > 0) d = std::min(d, dist[(y - 1) * width + (x + 1)] + 1.4142135623730951f);
+            dist[y * width + x] = d;
+        }
+    }
+
+    for (int y = height - 1; y >= 0; --y)
+    {
+        for (int x = width - 1; x >= 0; --x)
+        {
+            float d = dist[y * width + x];
+            if (x + 1 < width) d = std::min(d, dist[y * width + (x + 1)] + 1.0f);
+            if (y + 1 < height) d = std::min(d, dist[(y + 1) * width + x] + 1.0f);
+            if (x + 1 < width && y + 1 < height) d = std::min(d, dist[(y + 1) * width + (x + 1)] + 1.4142135623730951f);
+            if (x > 0 && y + 1 < height) d = std::min(d, dist[(y + 1) * width + (x - 1)] + 1.4142135623730951f);
+            dist[y * width + x] = d;
+        }
+    }
 
     const float spreadF = static_cast<float>(spread);
     for (int y = 0; y < height; ++y)
     {
         for (int x = 0; x < width; ++x)
         {
-            bool inside = data[y * width + x] > 127;
-            float minSqDist = std::numeric_limits<float>::max();
-            for (const auto& p : boundary)
-            {
-                float dx = static_cast<float>(x - p.x);
-                float dy = static_cast<float>(y - p.y);
-                float sq = dx * dx + dy * dy;
-                if (sq < minSqDist) minSqDist = sq;
-            }
-            float dist = std::sqrt(minSqDist);
-            if (!inside) dist = -dist;
+            bool isInside = data[y * width + x] > 127;
+            float d = dist[y * width + x];
+            if (!isInside) d = -d;
 
-            float normalized = 0.5f + 0.5f * dist / spreadF;
+            float normalized = 0.5f + 0.5f * d / spreadF;
             if (normalized < 0.0f) normalized = 0.0f;
             if (normalized > 1.0f) normalized = 1.0f;
             data[y * width + x] = static_cast<unsigned char>(normalized * 255.0f);
