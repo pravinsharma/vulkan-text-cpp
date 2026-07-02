@@ -1,0 +1,8 @@
+{
+  "name": "vulkan-text-cpp",
+  "version-string": "0.1.0",
+  "description": "Vulkan + GLFW application",
+  "dependencies": [
+    "glfw3"
+  ]
+}
