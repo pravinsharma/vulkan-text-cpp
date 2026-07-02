@@ -41,6 +41,8 @@ public:
 
     void setScreenSize(uint32_t width, uint32_t height);
     void setFont(const std::string& fontPath, uint32_t fontPixelSize);
+    void setSdfParams(float spread, float smoothing);
+    float sdSpread() const { return sdSpread_; }
 
     void drawText(VkCommandBuffer commandBuffer,
                   const std::string& text,
@@ -84,7 +86,8 @@ private:
     struct PushConstants
     {
         float screenSize[2];
-        float padding[2];
+        float sdSpread;
+        float sdSmoothing;
         float color[4];
         float isRect;
         float padding2[3];
@@ -112,6 +115,8 @@ private:
     uint32_t screenWidth_ = 0;
     uint32_t screenHeight_ = 0;
     uint32_t fontPixelSize_ = 0;
+    float sdSpread_ = 4.0f;
+    float sdSmoothing_ = 0.05f;
 
     FT_Library ftLibrary_ = nullptr;
     FT_Face ftFace_ = nullptr;

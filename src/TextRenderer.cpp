@@ -1,7 +1,10 @@
 #include "TextRenderer.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -16,15 +19,60 @@ constexpr uint32_t kAtlasWidth = 1024;
 constexpr uint32_t kAtlasHeight = 1024;
 constexpr uint32_t kFirstChar = 32;
 constexpr uint32_t kNumChars = 95;
+constexpr int kSdfSpread = 4;
 
-struct PushConstants
+void computeGlyphSDF(unsigned char* data, int width, int height, int spread)
 {
-    float screenSize[2];
-    float padding[2];
-    float color[4];
-    float isRect;
-    float padding2[3];
-};
+    struct Point { int x; int y; };
+    std::vector<Point> boundary;
+
+    for (int y = 0; y < height; ++y)
+    {
+        for (int x = 0; x < width; ++x)
+        {
+            bool inside = data[y * width + x] > 127;
+            bool isBoundary = false;
+            for (int dy = -1; dy <= 1 && !isBoundary; ++dy)
+            {
+                for (int dx = -1; dx <= 1 && !isBoundary; ++dx)
+                {
+                    if (dx == 0 && dy == 0) continue;
+                    int nx = x + dx;
+                    int ny = y + dy;
+                    bool outside = nx < 0 || nx >= width || ny < 0 || ny >= height || data[ny * width + nx] <= 127;
+                    if (inside && outside) isBoundary = true;
+                }
+            }
+            if (isBoundary) boundary.push_back({x, y});
+        }
+    }
+
+    if (boundary.empty()) return;
+
+    const float spreadF = static_cast<float>(spread);
+    for (int y = 0; y < height; ++y)
+    {
+        for (int x = 0; x < width; ++x)
+        {
+            bool inside = data[y * width + x] > 127;
+            float minSqDist = std::numeric_limits<float>::max();
+            for (const auto& p : boundary)
+            {
+                float dx = static_cast<float>(x - p.x);
+                float dy = static_cast<float>(y - p.y);
+                float sq = dx * dx + dy * dy;
+                if (sq < minSqDist) minSqDist = sq;
+            }
+            float dist = std::sqrt(minSqDist);
+            if (!inside) dist = -dist;
+
+            float normalized = 0.5f + 0.5f * dist / spreadF;
+            if (normalized < 0.0f) normalized = 0.0f;
+            if (normalized > 1.0f) normalized = 1.0f;
+            data[y * width + x] = static_cast<unsigned char>(normalized * 255.0f);
+        }
+    }
+}
 
 uint32_t findMemoryType(VkPhysicalDevice physicalDevice,
                         uint32_t typeFilter,
@@ -253,6 +301,12 @@ void TextRenderer::setFont(const std::string& fontPath, uint32_t fontPixelSize)
     uploadAtlasImage();
 }
 
+void TextRenderer::setSdfParams(float spread, float smoothing)
+{
+    sdSpread_ = spread;
+    sdSmoothing_ = smoothing;
+}
+
 void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSize)
 {
     atlasWidth_ = kAtlasWidth;
@@ -291,39 +345,52 @@ void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSi
             continue;
         }
 
-        if (penX + w + 1 > atlasWidth_)
+        const uint32_t tileW = w + kSdfSpread * 2;
+        const uint32_t tileH = h + kSdfSpread * 2;
+
+        if (penX + tileW + 1 > atlasWidth_)
         {
             penY += rowHeight + 1;
             penX = 1;
             rowHeight = 0;
         }
 
-        if (penY + h + 1 > atlasHeight_)
+        if (penY + tileH + 1 > atlasHeight_)
         {
             throw std::runtime_error("glyph atlas overflow");
         }
 
+        std::vector<unsigned char> tile(static_cast<size_t>(tileW) * tileH);
+        std::memset(tile.data(), 0, tile.size());
         for (uint32_t row = 0; row < h; ++row)
         {
-            const unsigned char* src = g->bitmap.buffer + row * g->bitmap.pitch;
-            unsigned char* dst = atlasPixels_.data() + (penY + row) * atlasWidth_ + penX;
+            const unsigned char* src = g->bitmap.buffer + static_cast<intptr_t>(row) * g->bitmap.pitch;
+            unsigned char* dst = tile.data() + (row + kSdfSpread) * tileW + kSdfSpread;
             std::memcpy(dst, src, w);
         }
 
+        computeGlyphSDF(tile.data(), static_cast<int>(tileW), static_cast<int>(tileH), kSdfSpread);
+
+        for (uint32_t row = 0; row < tileH; ++row)
+        {
+            unsigned char* dst = atlasPixels_.data() + (penY + row) * atlasWidth_ + penX;
+            std::memcpy(dst, tile.data() + row * tileW, tileW);
+        }
+
         Glyph info{};
-        info.size[0] = static_cast<float>(w);
-        info.size[1] = static_cast<float>(h);
-        info.bearing[0] = static_cast<float>(g->bitmap_left);
-        info.bearing[1] = static_cast<float>(g->bitmap_top);
+        info.size[0] = static_cast<float>(tileW);
+        info.size[1] = static_cast<float>(tileH);
+        info.bearing[0] = static_cast<float>(g->bitmap_left) - static_cast<float>(kSdfSpread);
+        info.bearing[1] = static_cast<float>(g->bitmap_top) + static_cast<float>(kSdfSpread);
         info.advance = static_cast<float>(g->advance.x) / 64.0f;
         info.uvMin[0] = static_cast<float>(penX) / static_cast<float>(atlasWidth_);
         info.uvMin[1] = static_cast<float>(penY) / static_cast<float>(atlasHeight_);
-        info.uvMax[0] = static_cast<float>(penX + w) / static_cast<float>(atlasWidth_);
-        info.uvMax[1] = static_cast<float>(penY + h) / static_cast<float>(atlasHeight_);
+        info.uvMax[0] = static_cast<float>(penX + tileW) / static_cast<float>(atlasWidth_);
+        info.uvMax[1] = static_cast<float>(penY + tileH) / static_cast<float>(atlasHeight_);
         glyphs_[charCode] = info;
 
-        penX += w + 1;
-        if (h + 1 > rowHeight) rowHeight = h + 1;
+        penX += tileW + 1;
+        if (tileH + 1 > rowHeight) rowHeight = tileH + 1;
     }
 }
 
@@ -924,6 +991,8 @@ void TextRenderer::drawText(VkCommandBuffer commandBuffer,
     PushConstants pc{};
     pc.screenSize[0] = static_cast<float>(screenWidth_);
     pc.screenSize[1] = static_cast<float>(screenHeight_);
+    pc.sdSpread = sdSpread_;
+    pc.sdSmoothing = sdSmoothing_;
     pc.color[0] = r;
     pc.color[1] = g;
     pc.color[2] = b;
@@ -996,6 +1065,8 @@ void TextRenderer::drawRect(VkCommandBuffer commandBuffer,
     PushConstants pc{};
     pc.screenSize[0] = static_cast<float>(screenWidth_);
     pc.screenSize[1] = static_cast<float>(screenHeight_);
+    pc.sdSpread = kSdfSpread;
+    pc.sdSmoothing = 1.0f;
     pc.color[0] = r;
     pc.color[1] = g;
     pc.color[2] = b;
