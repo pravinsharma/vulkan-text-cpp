@@ -8,6 +8,9 @@ Guidance for AI agents (and humans) working in this repository.
 - **Build system:** CMake 3.20+ with Ninja
 - **Windowing:** GLFW 3 (via vcpkg manifest)
 - **Graphics:** Vulkan (headers + loader from `VULKAN_SDK`)
+- **Text:** FreeType (via vcpkg manifest), GLSL shaders compiled to SPIR-V
+  at build time via `glslc`, then embedded into the binary by
+  `cmake/embed_spirv.cmake`.
 - **Platform:** Windows (MSVC, PowerShell 7)
 
 ## Required environment
@@ -40,11 +43,19 @@ Build output goes to `build/` (Debug) or `build-release/` (Release). The
 ## File layout (and what to edit)
 
 - `CMakeLists.txt` — add new source files here (currently `src/main.cpp`,
-  `src/Application.h`, `src/Application.cpp`). New libraries to link go
+  `src/Application.h`, `src/Application.cpp`, `src/TextRenderer.h`,
+  `src/TextRenderer.cpp`). New libraries to link go
   in `target_link_libraries`. The vcpkg toolchain is auto-selected when
   `VCPKG_ROOT` is set; the build will hard-fail if `VULKAN_SDK` is not set.
-- `vcpkg.json` — add vcpkg ports here. Currently only `glfw3`. Do **not**
-  add `vulkan` / `vulkan-headers`; those come from `VULKAN_SDK`.
+  GLSL shaders in `shaders/` are compiled to SPIR-V and embedded as C++
+  headers; new shaders just need to be listed in the `SHADER_SOURCES`
+  variable and given matching `.spv.h` generation rules.
+- `shaders/text.vert`, `shaders/text.frag` — GLSL source for the text
+  rendering pipeline. Push constants supply screen size and color.
+- `cmake/embed_spirv.cmake` — script that converts a `.spv` file to a
+  C++ header with the data as a `std::vector<uint32_t>`.
+- `vcpkg.json` — add vcpkg ports here. Currently `glfw3` and `freetype`.
+  Do **not** add `vulkan` / `vulkan-headers`; those come from `VULKAN_SDK`.
 - `CMakePresets.json` — `debug` and `release` presets, both Ninja.
   Each preset prepends `E:/dev/bin` to `PATH` so `ninja` is found.
 - `src/main.cpp` — entry point, exception-to-stderr shim.
