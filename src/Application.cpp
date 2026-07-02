@@ -40,6 +40,7 @@ void Application::initWindow()
 
     glfwSetWindowUserPointer(window_, this);
     glfwSetFramebufferSizeCallback(window_, framebufferResizeCallback);
+    glfwSetMouseButtonCallback(window_, mouseButtonCallback);
 }
 
 void Application::initVulkan()
@@ -149,6 +150,26 @@ void Application::framebufferResizeCallback(GLFWwindow* window, int width, int h
     {
         app->renderer_->setFramebufferResized();
     }
+}
+
+void Application::mouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
+{
+    (void)mods;
+    auto* app = static_cast<Application*>(glfwGetWindowUserPointer(window));
+    if (!app || !app->renderer_) return;
+
+    double cx = 0.0, cy = 0.0;
+    glfwGetCursorPos(window, &cx, &cy);
+
+    int winW = 0, winH = 0;
+    glfwGetWindowSize(window, &winW, &winH);
+    int fbW = 0, fbH = 0;
+    glfwGetFramebufferSize(window, &fbW, &fbH);
+
+    double sx = (winW > 0) ? static_cast<double>(fbW) / static_cast<double>(winW) : 1.0;
+    double sy = (winH > 0) ? static_cast<double>(fbH) / static_cast<double>(winH) : 1.0;
+
+    app->renderer_->onMouseButton(button, action, cx * sx, cy * sy);
 }
 
 std::vector<const char*> Application::getRequiredExtensions()

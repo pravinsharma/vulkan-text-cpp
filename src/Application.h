@@ -30,6 +30,7 @@ private:
     void createSurface();
 
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
+    static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
     static std::vector<const char*> getRequiredExtensions();
 
     GLFWwindow* window_ = nullptr;

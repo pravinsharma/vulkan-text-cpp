@@ -6,6 +6,7 @@
 
 #include <stb_truetype.h>
 
+#include <array>
 #include <optional>
 #include <string>
 #include <vector>
@@ -25,6 +26,12 @@ struct SwapchainSupportDetails
     std::vector<VkPresentModeKHR>   presentModes;
 };
 
+struct FontOption
+{
+    std::string name;
+    std::string path;
+};
+
 class Renderer
 {
 public:
@@ -36,11 +43,24 @@ public:
 
     void drawFrame();
     void setFramebufferResized() { framebufferResized_ = true; }
+    void onMouseButton(int button, int action, double fbX, double fbY);
+
+    static constexpr int   kAtlasWidth      = 512;
+    static constexpr int   kAtlasHeight     = 512;
+    static constexpr int   kFirstChar       = 32;
+    static constexpr int   kCharCount       = 96;
+    static constexpr float kFontSize        = 32.0f;
+    static constexpr int   kMaxChars        = 256;
+    static constexpr int   kMaxVerts        = 16384;
+    static constexpr int   kAppbarHeight    = 40;
+    static constexpr int   kDropdownWidth   = 260;
+    static constexpr int   kDropdownHeight  = 28;
+    static constexpr int   kDropdownPadX    = 12;
 
 private:
     void pickPhysicalDevice();
     void createLogicalDevice();
-    void createSurface();  // not used; surface is owned externally and passed in
+    void createSurface();
 
     void createSwapchain();
     void createImageViews();
@@ -50,15 +70,23 @@ private:
     void createFramebuffers();
     void createCommandPool();
     void createAtlasResources();
+    void destroyAtlasResources();
+    void rebuildAtlasForFont(size_t fontIndex);
     void createVertexBuffer();
     void createDescriptorResources();
     void createCommandBuffers();
     void createSyncObjects();
 
     void recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex);
-    void buildTextVertices(std::vector<float>& vertices);
-    void recreateSwapchain();
+    void appendText(std::vector<float>& vertices, const std::string& text,
+                    float x, float y, std::array<float, 4> color) const;
+    void appendSolidRect(std::vector<float>& vertices,
+                         float x0, float y0, float x1, float y1,
+                         std::array<float, 4> color) const;
+    void measureText(const std::string& text, float& outWidth, float& outHeight) const;
+    void rebuildSwapchain();
     void cleanupSwapchain();
+    void selectAvailableFonts();
 
     QueueFamilyIndices   findQueueFamilies(VkPhysicalDevice device) const;
     SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice device) const;
@@ -74,14 +102,6 @@ private:
                                               VkImageLayout oldLayout, VkImageLayout newLayout) const;
     void                 copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height) const;
     std::vector<char>    readFile(const std::string& path) const;
-
-    static constexpr int   kAtlasWidth  = 512;
-    static constexpr int   kAtlasHeight = 512;
-    static constexpr int   kFirstChar   = 32;
-    static constexpr int   kCharCount   = 96;
-    static constexpr float kFontSize    = 32.0f;
-    static constexpr int   kMaxChars    = 256;
-    static constexpr int   kMaxVerts    = kMaxChars * 6;
 
     VkInstance    instance_   = VK_NULL_HANDLE;
     VkSurfaceKHR  surface_    = VK_NULL_HANDLE;
@@ -120,14 +140,18 @@ private:
 
     VkBuffer       vertexBuffer_     = VK_NULL_HANDLE;
     VkDeviceMemory vertexMemory_     = VK_NULL_HANDLE;
-    VkDeviceSize   vertexBufferSize_ = sizeof(float) * 4 * kMaxVerts;
+    VkDeviceSize   vertexBufferSize_ = sizeof(float) * 8 * kMaxVerts;
 
     VkSemaphore imageAvailableSemaphore_ = VK_NULL_HANDLE;
     std::vector<VkSemaphore> renderFinishedSemaphores_;
     VkFence     inFlightFence_           = VK_NULL_HANDLE;
 
-    bool framebufferResized_ = false;
-    float fontAscentPx_ = 0.0f;
+    std::vector<FontOption> fonts_;
+    size_t                  currentFontIndex_ = 0;
+    bool                    dropdownOpen_     = false;
+    std::vector<unsigned char> fontBuffer_;
+    bool                    framebufferResized_ = false;
+    float                   fontAscentPx_       = 0.0f;
 
     std::string text_ = "A quick brown fox jumped over a lazy dog!";
 };

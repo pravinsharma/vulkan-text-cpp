@@ -7,6 +7,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <set>
@@ -18,11 +19,22 @@
 
 namespace
 {
-const std::vector<const char*> kFontCandidatePaths = {
-    "C:/Windows/Fonts/segoeui.ttf",
-    "C:/Windows/Fonts/arial.ttf",
-    "C:/Windows/Fonts/seguisb.ttf",
+const std::vector<FontOption> kFontCandidates = {
+    {"Segoe UI",      "C:/Windows/Fonts/segoeui.ttf"},
+    {"Arial",         "C:/Windows/Fonts/arial.ttf"},
+    {"Calibri",       "C:/Windows/Fonts/calibri.ttf"},
+    {"Consolas",      "C:/Windows/Fonts/consola.ttf"},
+    {"Courier New",   "C:/Windows/Fonts/cour.ttf"},
+    {"Georgia",       "C:/Windows/Fonts/georgia.ttf"},
+    {"Tahoma",        "C:/Windows/Fonts/tahoma.ttf"},
+    {"Verdana",       "C:/Windows/Fonts/verdana.ttf"},
 };
+
+const std::array<float, 4> kColorAppbarBg       = { 0.13f, 0.13f, 0.18f, 1.0f };
+const std::array<float, 4> kColorDropdownBg     = { 0.20f, 0.20f, 0.28f, 1.0f };
+const std::array<float, 4> kColorDropdownItem   = { 0.18f, 0.18f, 0.26f, 1.0f };
+const std::array<float, 4> kColorDropdownActive = { 0.30f, 0.45f, 0.85f, 1.0f };
+const std::array<float, 4> kColorText           = { 1.0f,  1.0f,  1.0f,  1.0f };
 
 std::filesystem::path exeDir()
 {
@@ -57,6 +69,12 @@ std::vector<char> readFileImpl(const std::filesystem::path& path)
 Renderer::Renderer(VkInstance instance, VkSurfaceKHR surface, GLFWwindow* window)
     : instance_(instance), surface_(surface), window_(window)
 {
+    selectAvailableFonts();
+    if (fonts_.empty())
+    {
+        throw std::runtime_error("No TTF fonts found in C:/Windows/Fonts");
+    }
+
     pickPhysicalDevice();
     createLogicalDevice();
     createSwapchain();
@@ -80,10 +98,7 @@ Renderer::~Renderer()
     vkDestroyBuffer(device_, vertexBuffer_, nullptr);
     vkFreeMemory(device_, vertexMemory_, nullptr);
 
-    vkDestroySampler(device_, atlasSampler_, nullptr);
-    vkDestroyImageView(device_, atlasImageView_, nullptr);
-    vkDestroyImage(device_, atlasImage_, nullptr);
-    vkFreeMemory(device_, atlasMemory_, nullptr);
+    destroyAtlasResources();
 
     vkDestroyDescriptorSetLayout(device_, descriptorSetLayout_, nullptr);
     vkDestroyDescriptorPool(device_, descriptorPool_, nullptr);
@@ -103,6 +118,22 @@ Renderer::~Renderer()
 
     vkDestroyCommandPool(device_, commandPool_, nullptr);
     vkDestroyDevice(device_, nullptr);
+}
+
+void Renderer::selectAvailableFonts()
+{
+    for (const auto& f : kFontCandidates)
+    {
+        std::ifstream test(f.path, std::ios::binary | std::ios::ate);
+        if (test.is_open())
+        {
+            fonts_.push_back(f);
+        }
+    }
+    if (!fonts_.empty())
+    {
+        currentFontIndex_ = 0;
+    }
 }
 
 void Renderer::pickPhysicalDevice()
@@ -443,10 +474,10 @@ void Renderer::createPipeline()
 
     VkVertexInputBindingDescription binding{};
     binding.binding = 0;
-    binding.stride = sizeof(float) * 4;
+    binding.stride = sizeof(float) * 8;
     binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    std::array<VkVertexInputAttributeDescription, 2> attrs{};
+    std::array<VkVertexInputAttributeDescription, 3> attrs{};
     attrs[0].location = 0;
     attrs[0].binding = 0;
     attrs[0].format = VK_FORMAT_R32G32_SFLOAT;
@@ -455,6 +486,10 @@ void Renderer::createPipeline()
     attrs[1].binding = 0;
     attrs[1].format = VK_FORMAT_R32G32_SFLOAT;
     attrs[1].offset = sizeof(float) * 2;
+    attrs[2].location = 2;
+    attrs[2].binding = 0;
+    attrs[2].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    attrs[2].offset = sizeof(float) * 4;
 
     vi.vertexBindingDescriptionCount = 1;
     vi.pVertexBindingDescriptions = &binding;
@@ -505,9 +540,9 @@ void Renderer::createPipeline()
     dsi.pDynamicStates = dyn;
 
     VkPushConstantRange pcr{};
-    pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pcr.offset = 0;
-    pcr.size = sizeof(float) * 16;
+    pcr.size = sizeof(float) * 17;
 
     VkPipelineLayoutCreateInfo pl{};
     pl.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -764,46 +799,53 @@ void Renderer::copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width,
     vkFreeCommandBuffers(device_, commandPool_, 1, &cmd);
 }
 
-void Renderer::createAtlasResources()
+namespace
 {
-    std::string fontPath;
-    std::vector<unsigned char> fontBuffer;
-    for (const auto& p : kFontCandidatePaths)
+std::vector<unsigned char> readFontFile(const std::string& path)
+{
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f.is_open())
     {
-        std::ifstream f(p, std::ios::binary | std::ios::ate);
-        if (f.is_open())
-        {
-            auto sz = static_cast<size_t>(f.tellg());
-            f.seekg(0);
-            fontBuffer.resize(sz);
-            f.read(reinterpret_cast<char*>(fontBuffer.data()), static_cast<std::streamsize>(sz));
-            fontPath = p;
-            break;
-        }
+        throw std::runtime_error("Failed to open font file: " + path);
     }
-    if (fontPath.empty())
-    {
-        throw std::runtime_error("No TTF font found in C:/Windows/Fonts (tried segoeui/arial/seguisb)");
-    }
+    auto sz = static_cast<size_t>(f.tellg());
+    f.seekg(0);
+    std::vector<unsigned char> data(sz);
+    f.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(sz));
+    return data;
+}
 
-    std::vector<unsigned char> bitmap(kAtlasWidth * kAtlasHeight);
+void bakeFont(const std::vector<unsigned char>& fontBuffer,
+              std::vector<unsigned char>& bitmap,
+              stbtt_bakedchar* outChars,
+              float& outAscentPx)
+{
+    bitmap.assign(static_cast<size_t>(Renderer::kAtlasWidth) * Renderer::kAtlasHeight, 0);
     int rc = stbtt_BakeFontBitmap(
-        fontBuffer.data(), 0, kFontSize,
-        bitmap.data(), kAtlasWidth, kAtlasHeight,
-        kFirstChar, kCharCount, bakedChars_);
+        fontBuffer.data(), 0, Renderer::kFontSize,
+        bitmap.data(), Renderer::kAtlasWidth, Renderer::kAtlasHeight,
+        Renderer::kFirstChar, Renderer::kCharCount, outChars);
     if (rc <= 0)
     {
         throw std::runtime_error("Failed to bake font bitmap: atlas too small");
     }
 
-    int ascent = 0;
-    stbtt_fontinfo fontInfo{};
-    if (!stbtt_InitFont(&fontInfo, fontBuffer.data(), 0))
+    stbtt_fontinfo info{};
+    if (!stbtt_InitFont(&info, fontBuffer.data(), 0))
     {
-        throw std::runtime_error("stbtt_InitFont failed for " + fontPath);
+        throw std::runtime_error("stbtt_InitFont failed");
     }
-    stbtt_GetFontVMetrics(&fontInfo, &ascent, nullptr, nullptr);
-    fontAscentPx_ = ascent * stbtt_ScaleForPixelHeight(&fontInfo, kFontSize);
+    int ascent = 0;
+    stbtt_GetFontVMetrics(&info, &ascent, nullptr, nullptr);
+    outAscentPx = ascent * stbtt_ScaleForPixelHeight(&info, Renderer::kFontSize);
+}
+}  // namespace
+
+void Renderer::createAtlasResources()
+{
+    std::vector<unsigned char> fontBytes = readFontFile(fonts_[currentFontIndex_].path);
+    std::vector<unsigned char> bitmap;
+    bakeFont(fontBytes, bitmap, bakedChars_, fontAscentPx_);
 
     VkImageCreateInfo ii{};
     ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -891,6 +933,150 @@ void Renderer::createAtlasResources()
 
     vkDestroyBuffer(device_, staging, nullptr);
     vkFreeMemory(device_, stagingMem, nullptr);
+}
+
+void Renderer::destroyAtlasResources()
+{
+    if (atlasSampler_ != VK_NULL_HANDLE)
+    {
+        vkDestroySampler(device_, atlasSampler_, nullptr);
+        atlasSampler_ = VK_NULL_HANDLE;
+    }
+    if (atlasImageView_ != VK_NULL_HANDLE)
+    {
+        vkDestroyImageView(device_, atlasImageView_, nullptr);
+        atlasImageView_ = VK_NULL_HANDLE;
+    }
+    if (atlasImage_ != VK_NULL_HANDLE)
+    {
+        vkDestroyImage(device_, atlasImage_, nullptr);
+        atlasImage_ = VK_NULL_HANDLE;
+    }
+    if (atlasMemory_ != VK_NULL_HANDLE)
+    {
+        vkFreeMemory(device_, atlasMemory_, nullptr);
+        atlasMemory_ = VK_NULL_HANDLE;
+    }
+}
+
+void Renderer::rebuildAtlasForFont(size_t fontIndex)
+{
+    if (fontIndex >= fonts_.size())
+    {
+        throw std::out_of_range("Font index out of range");
+    }
+
+    vkDeviceWaitIdle(device_);
+
+    currentFontIndex_ = fontIndex;
+    fontBuffer_ = readFontFile(fonts_[fontIndex].path);
+
+    std::vector<unsigned char> bitmap;
+    bakeFont(fontBuffer_, bitmap, bakedChars_, fontAscentPx_);
+
+    destroyAtlasResources();
+
+    VkImageCreateInfo ii{};
+    ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ii.imageType = VK_IMAGE_TYPE_2D;
+    ii.format = VK_FORMAT_R8_UNORM;
+    ii.extent = { static_cast<uint32_t>(kAtlasWidth), static_cast<uint32_t>(kAtlasHeight), 1 };
+    ii.mipLevels = 1;
+    ii.arrayLayers = 1;
+    ii.samples = VK_SAMPLE_COUNT_1_BIT;
+    ii.tiling = VK_IMAGE_TILING_LINEAR;
+    ii.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    if (vkCreateImage(device_, &ii, nullptr, &atlasImage_) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to create atlas image");
+    }
+
+    VkMemoryRequirements req{};
+    vkGetImageMemoryRequirements(device_, atlasImage_, &req);
+
+    VkMemoryAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = findMemoryType(
+        req.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (vkAllocateMemory(device_, &ai, nullptr, &atlasMemory_) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to allocate atlas memory");
+    }
+    vkBindImageMemory(device_, atlasImage_, atlasMemory_, 0);
+
+    VkImageViewCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vi.image = atlasImage_;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = VK_FORMAT_R8_UNORM;
+    vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vi.subresourceRange.levelCount = 1;
+    vi.subresourceRange.layerCount = 1;
+
+    if (vkCreateImageView(device_, &vi, nullptr, &atlasImageView_) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to create atlas image view");
+    }
+
+    VkSamplerCreateInfo si{};
+    si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    si.magFilter = VK_FILTER_LINEAR;
+    si.minFilter = VK_FILTER_LINEAR;
+    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.anisotropyEnable = VK_FALSE;
+    si.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    si.unnormalizedCoordinates = VK_FALSE;
+    si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+
+    if (vkCreateSampler(device_, &si, nullptr, &atlasSampler_) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to create sampler");
+    }
+
+    VkBuffer staging = VK_NULL_HANDLE;
+    VkDeviceMemory stagingMem = VK_NULL_HANDLE;
+    VkDeviceSize size = static_cast<VkDeviceSize>(bitmap.size());
+    createBuffer(size,
+                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 staging, stagingMem);
+
+    void* mapped = nullptr;
+    vkMapMemory(device_, stagingMem, 0, size, 0, &mapped);
+    std::memcpy(mapped, bitmap.data(), static_cast<size_t>(size));
+    vkUnmapMemory(device_, stagingMem);
+
+    transitionImageLayout(atlasImage_, VK_FORMAT_R8_UNORM,
+                          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    copyBufferToImage(staging, atlasImage_, kAtlasWidth, kAtlasHeight);
+    transitionImageLayout(atlasImage_, VK_FORMAT_R8_UNORM,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    vkDestroyBuffer(device_, staging, nullptr);
+    vkFreeMemory(device_, stagingMem, nullptr);
+
+    VkDescriptorImageInfo imgInfo{};
+    imgInfo.sampler = atlasSampler_;
+    imgInfo.imageView = atlasImageView_;
+    imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = descriptorSet_;
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &imgInfo;
+
+    vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
 }
 
 void Renderer::createVertexBuffer()
@@ -1006,7 +1192,7 @@ void Renderer::cleanupSwapchain()
     renderFinishedSemaphores_.clear();
 }
 
-void Renderer::recreateSwapchain()
+void Renderer::rebuildSwapchain()
 {
     int w = 0, h = 0;
     glfwGetFramebufferSize(window_, &w, &h);
@@ -1027,44 +1213,92 @@ void Renderer::recreateSwapchain()
     createSyncObjects();
 }
 
-void Renderer::buildTextVertices(std::vector<float>& vertices)
+void Renderer::appendText(std::vector<float>& vertices, const std::string& text,
+                          float x, float y, std::array<float, 4> color) const
 {
-    vertices.clear();
+    if (text.empty()) return;
 
-    float cursorX = 0.0f;
-    float cursorY = fontAscentPx_;
+    float cursorX = x;
+    float cursorY = y + fontAscentPx_;
 
-    for (size_t i = 0; i < text_.size(); ++i)
+    const size_t floatsPerVertex = 8;
+    for (size_t i = 0; i < text.size(); ++i)
     {
-        unsigned char c = static_cast<unsigned char>(text_[i]);
+        unsigned char c = static_cast<unsigned char>(text[i]);
         if (c < kFirstChar || c >= kFirstChar + kCharCount) continue;
-        if (static_cast<int>(vertices.size() / 4) >= kMaxVerts) break;
+        if (static_cast<int>(vertices.size() / floatsPerVertex) >= kMaxVerts) break;
 
         stbtt_aligned_quad q{};
-        float x = cursorX;
-        float y = cursorY;
-        stbtt_GetBakedQuad(bakedChars_, kAtlasWidth, kAtlasHeight, c - kFirstChar, &x, &y, &q, 0);
-        cursorX = x;
+        float qx = cursorX;
+        float qy = cursorY;
+        stbtt_GetBakedQuad(bakedChars_, kAtlasWidth, kAtlasHeight, c - kFirstChar, &qx, &qy, &q, 0);
+        cursorX = qx;
 
-        vertices.push_back(q.x0); vertices.push_back(q.y0); vertices.push_back(q.s0); vertices.push_back(q.t0);
-        vertices.push_back(q.x1); vertices.push_back(q.y0); vertices.push_back(q.s1); vertices.push_back(q.t0);
-        vertices.push_back(q.x0); vertices.push_back(q.y1); vertices.push_back(q.s0); vertices.push_back(q.t1);
+        const float s0 = q.s0, t0 = q.t0, s1 = q.s1, t1 = q.t1;
+        const float x0 = q.x0, y0 = q.y0, x1 = q.x1, y1 = q.y1;
 
-        vertices.push_back(q.x1); vertices.push_back(q.y0); vertices.push_back(q.s1); vertices.push_back(q.t0);
-        vertices.push_back(q.x1); vertices.push_back(q.y1); vertices.push_back(q.s1); vertices.push_back(q.t1);
-        vertices.push_back(q.x0); vertices.push_back(q.y1); vertices.push_back(q.s0); vertices.push_back(q.t1);
+        auto push = [&](float px, float py, float u, float v) {
+            vertices.push_back(px);
+            vertices.push_back(py);
+            vertices.push_back(u);
+            vertices.push_back(v);
+            vertices.push_back(color[0]);
+            vertices.push_back(color[1]);
+            vertices.push_back(color[2]);
+            vertices.push_back(color[3]);
+        };
+        push(x0, y0, s0, t0);
+        push(x1, y0, s1, t0);
+        push(x0, y1, s0, t1);
+        push(x1, y0, s1, t0);
+        push(x1, y1, s1, t1);
+        push(x0, y1, s0, t1);
     }
+}
 
-    float textWidth = cursorX;
-    float textHeight = kFontSize;
-    float offsetX = (static_cast<float>(swapchainExtent_.width)  - textWidth)  * 0.5f;
-    float offsetY = (static_cast<float>(swapchainExtent_.height) - textHeight) * 0.5f;
+void Renderer::appendSolidRect(std::vector<float>& vertices,
+                               float x0, float y0, float x1, float y1,
+                               std::array<float, 4> color) const
+{
+    if (static_cast<int>(vertices.size() / 8) + 6 > kMaxVerts) return;
 
-    for (size_t i = 0; i < vertices.size(); i += 4)
+    auto push = [&](float px, float py) {
+        vertices.push_back(px);
+        vertices.push_back(py);
+        vertices.push_back(0.0f);
+        vertices.push_back(0.0f);
+        vertices.push_back(color[0]);
+        vertices.push_back(color[1]);
+        vertices.push_back(color[2]);
+        vertices.push_back(color[3]);
+    };
+    push(x0, y0);
+    push(x1, y0);
+    push(x0, y1);
+    push(x1, y0);
+    push(x1, y1);
+    push(x0, y1);
+}
+
+void Renderer::measureText(const std::string& text, float& outWidth, float& outHeight) const
+{
+    outWidth = 0.0f;
+    outHeight = static_cast<float>(kFontSize);
+    if (text.empty()) return;
+
+    float cursorX = 0.0f;
+    for (size_t i = 0; i < text.size(); ++i)
     {
-        vertices[i + 0] += offsetX;
-        vertices[i + 1] += offsetY;
+        unsigned char c = static_cast<unsigned char>(text[i]);
+        if (c < kFirstChar || c >= kFirstChar + kCharCount) continue;
+
+        stbtt_aligned_quad q{};
+        float qx = cursorX;
+        float qy = 0.0f;
+        stbtt_GetBakedQuad(bakedChars_, kAtlasWidth, kAtlasHeight, c - kFirstChar, &qx, &qy, &q, 0);
+        cursorX = qx;
     }
+    outWidth = cursorX;
 }
 
 void Renderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex)
@@ -1107,33 +1341,116 @@ void Renderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex)
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
 
+    const float W = static_cast<float>(swapchainExtent_.width);
+    const float H = static_cast<float>(swapchainExtent_.height);
+
+    const float dropdownX = (W - static_cast<float>(kDropdownWidth)) * 0.5f;
+    const float dropdownY = (static_cast<float>(kAppbarHeight) - static_cast<float>(kDropdownHeight)) * 0.5f;
+    const float dropdownX1 = dropdownX + static_cast<float>(kDropdownWidth);
+    const float dropdownY1 = dropdownY + static_cast<float>(kDropdownHeight);
+
     std::vector<float> vertices;
-    buildTextVertices(vertices);
+    vertices.reserve(static_cast<size_t>(kMaxVerts) * 8);
 
-    if (!vertices.empty())
+    appendSolidRect(vertices, 0.0f, 0.0f, W,
+                    static_cast<float>(kAppbarHeight), kColorAppbarBg);
+    appendSolidRect(vertices, dropdownX, dropdownY, dropdownX1, dropdownY1, kColorDropdownBg);
+
+    if (dropdownOpen_)
     {
-        void* mapped = nullptr;
-        vkMapMemory(device_, vertexMemory_, 0, vertexBufferSize_, 0, &mapped);
-        std::memcpy(mapped, vertices.data(), vertices.size() * sizeof(float));
-        vkUnmapMemory(device_, vertexMemory_);
+        const float itemY0 = static_cast<float>(kAppbarHeight);
+        for (size_t i = 0; i < fonts_.size(); ++i)
+        {
+            const float y0 = itemY0 + static_cast<float>(i) * static_cast<float>(kDropdownHeight);
+            const float y1 = y0 + static_cast<float>(kDropdownHeight);
+            const std::array<float, 4> color = (i == currentFontIndex_)
+                ? kColorDropdownActive
+                : kColorDropdownItem;
+            appendSolidRect(vertices, dropdownX, y0, dropdownX1, y1, color);
+        }
+    }
 
-        float proj[16] = {
-             2.0f / static_cast<float>(swapchainExtent_.width), 0.0f, 0.0f, 0.0f,
-             0.0f,  2.0f / static_cast<float>(swapchainExtent_.height), 0.0f, 0.0f,
-             0.0f, 0.0f, 1.0f, 0.0f,
-            -1.0f, -1.0f, 0.0f, 1.0f,
-        };
-        vkCmdPushConstants(cmd, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(proj), proj);
+    const size_t uiVertexCount = vertices.size() / 8;
 
-        VkBuffer vbs[] = { vertexBuffer_ };
-        VkDeviceSize offs[] = { 0 };
-        vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offs);
+    if (dropdownOpen_)
+    {
+        const float itemY0 = static_cast<float>(kAppbarHeight);
+        for (size_t i = 0; i < fonts_.size(); ++i)
+        {
+            const float y0 = itemY0 + static_cast<float>(i) * static_cast<float>(kDropdownHeight);
+            const float yCenter = y0 + (static_cast<float>(kDropdownHeight) - static_cast<float>(kFontSize)) * 0.5f;
+            appendText(vertices, fonts_[i].name, dropdownX + static_cast<float>(kDropdownPadX), yCenter, kColorText);
+        }
+    }
 
-        VkDescriptorSet sets[] = { descriptorSet_ };
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                pipelineLayout_, 0, 1, sets, 0, nullptr);
+    {
+        const std::string& label = fonts_[currentFontIndex_].name + "  v";
+        float textW = 0.0f, textH = 0.0f;
+        measureText(label, textW, textH);
+        const float textX = dropdownX + (static_cast<float>(kDropdownWidth) - textW) * 0.5f;
+        const float textY = dropdownY + (static_cast<float>(kDropdownHeight) - textH) * 0.5f;
+        appendText(vertices, label, textX, textY, kColorText);
+    }
 
-        vkCmdDraw(cmd, static_cast<uint32_t>(vertices.size() / 4), 1, 0, 0);
+    {
+        float textW = 0.0f, textH = 0.0f;
+        measureText(text_, textW, textH);
+        const float contentTop = static_cast<float>(kAppbarHeight);
+        const float contentH  = H - contentTop;
+        const float offsetX = (W - textW) * 0.5f;
+        const float offsetY = contentTop + (contentH - textH) * 0.5f;
+        appendText(vertices, text_, offsetX, offsetY, kColorText);
+    }
+
+    if (vertices.empty())
+    {
+        vkCmdEndRenderPass(cmd);
+        if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to end command buffer");
+        }
+        return;
+    }
+
+    void* mapped = nullptr;
+    vkMapMemory(device_, vertexMemory_, 0, vertexBufferSize_, 0, &mapped);
+    std::memcpy(mapped, vertices.data(), vertices.size() * sizeof(float));
+    vkUnmapMemory(device_, vertexMemory_);
+
+    float pc[17] = {
+         2.0f / W, 0.0f, 0.0f, 0.0f,
+         0.0f, 2.0f / H, 0.0f, 0.0f,
+         0.0f, 0.0f, 1.0f, 0.0f,
+        -1.0f, -1.0f, 0.0f, 1.0f,
+         0.0f,
+    };
+
+    VkBuffer vbs[] = { vertexBuffer_ };
+    VkDeviceSize offs[] = { 0 };
+    vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offs);
+
+    VkDescriptorSet sets[] = { descriptorSet_ };
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipelineLayout_, 0, 1, sets, 0, nullptr);
+
+    pc[16] = 0.0f;
+    vkCmdPushConstants(cmd, pipelineLayout_,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(pc), pc);
+    if (uiVertexCount > 0)
+    {
+        vkCmdDraw(cmd, static_cast<uint32_t>(uiVertexCount), 1, 0, 0);
+    }
+
+    const size_t textVertexCount = (vertices.size() / 8) - uiVertexCount;
+    if (textVertexCount > 0)
+    {
+        pc[16] = 1.0f;
+        vkCmdPushConstants(cmd, pipelineLayout_,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(pc), pc);
+        vkCmdDraw(cmd, static_cast<uint32_t>(textVertexCount), 1,
+                  static_cast<uint32_t>(uiVertexCount), 0);
     }
 
     vkCmdEndRenderPass(cmd);
@@ -1153,7 +1470,7 @@ void Renderer::drawFrame()
                                        imageAvailableSemaphore_, VK_NULL_HANDLE, &imageIndex);
     if (r == VK_ERROR_OUT_OF_DATE_KHR)
     {
-        recreateSwapchain();
+        rebuildSwapchain();
         framebufferResized_ = false;
         return;
     }
@@ -1164,7 +1481,7 @@ void Renderer::drawFrame()
 
     if (framebufferResized_)
     {
-        recreateSwapchain();
+        rebuildSwapchain();
         framebufferResized_ = false;
         return;
     }
@@ -1204,7 +1521,7 @@ void Renderer::drawFrame()
     VkResult pr = vkQueuePresentKHR(presentQueue_, &pi);
     if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR || framebufferResized_)
     {
-        recreateSwapchain();
+        rebuildSwapchain();
         framebufferResized_ = false;
     }
     else if (pr != VK_SUCCESS)
@@ -1217,3 +1534,49 @@ std::vector<char> Renderer::readFile(const std::string& path) const
 {
     return readFileImpl(exeDir() / path);
 }
+
+void Renderer::onMouseButton(int button, int action, double fbX, double fbY)
+{
+    if (button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS) return;
+
+    const float W = static_cast<float>(swapchainExtent_.width);
+    const float H = static_cast<float>(swapchainExtent_.height);
+    const float x = static_cast<float>(fbX);
+    const float y = static_cast<float>(fbY);
+
+    const float dropdownX0 = (W - static_cast<float>(kDropdownWidth)) * 0.5f;
+    const float dropdownX1 = dropdownX0 + static_cast<float>(kDropdownWidth);
+    const float dropdownY0 = (static_cast<float>(kAppbarHeight) - static_cast<float>(kDropdownHeight)) * 0.5f;
+    const float dropdownY1 = dropdownY0 + static_cast<float>(kDropdownHeight);
+
+    const bool inButton = (x >= dropdownX0 && x < dropdownX1 &&
+                           y >= dropdownY0 && y < dropdownY1);
+
+    if (dropdownOpen_)
+    {
+        const float itemY0 = static_cast<float>(kAppbarHeight);
+        const float itemY1 = itemY0 + static_cast<float>(fonts_.size()) * static_cast<float>(kDropdownHeight);
+        if (x >= dropdownX0 && x < dropdownX1 && y >= itemY0 && y < itemY1)
+        {
+            const size_t idx = static_cast<size_t>((y - itemY0) / static_cast<float>(kDropdownHeight));
+            if (idx < fonts_.size() && idx != currentFontIndex_)
+            {
+                dropdownOpen_ = false;
+                rebuildAtlasForFont(idx);
+            }
+            return;
+        }
+    }
+
+    if (inButton)
+    {
+        dropdownOpen_ = !dropdownOpen_;
+        return;
+    }
+
+    if (dropdownOpen_)
+    {
+        dropdownOpen_ = false;
+    }
+}
+

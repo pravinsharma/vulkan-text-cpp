@@ -62,9 +62,11 @@ the compiled GLSL shaders are placed in `build/shaders/`.
   instance + surface; owns the `Renderer`.
 - `src/Renderer.h` / `src/Renderer.cpp` — owns the device, swapchain,
   render pass, pipeline, font atlas, sync objects. The text string
-  lives in `Renderer::text_`. The font is loaded from
-  `C:/Windows/Fonts/segoeui.ttf` (falls back to `arial.ttf`,
-  `seguisb.ttf`).
+  lives in `Renderer::text_`. The font is loaded from the `kFontCandidates`
+  list in `Renderer.cpp` (Segoe UI, Arial, Calibri, Consolas, Courier
+  New, Georgia, Tahoma, Verdana — only the ones that exist on disk are
+  kept). The active font drives the glyph atlas and the dropdown in the
+  appbar.
 - `scripts/*.ps1` — the user-facing build pipeline.
 
 ## Conventions
@@ -94,8 +96,15 @@ the compiled GLSL shaders are placed in `build/shaders/`.
   add the basename to the `SHADERS` list in `CMakeLists.txt`, and load
   the resulting `.spv` in `Renderer::createPipeline`.
 - **Change the text:** edit `Renderer::text_` in `src/Renderer.h`.
-- **Change the font / size:** edit `kFontCandidatePaths` and
-  `kFontSize` in `src/Renderer.h`; re-bake the atlas at init.
+- **Change the font / size:** edit `kFontCandidates` and `kFontSize` in
+  `src/Renderer.h`; the atlas is re-baked on init.
+- **Add / remove a font in the dropdown:** edit `kFontCandidates` in
+  `src/Renderer.cpp` (the list is filtered to entries that exist on
+  disk at startup).
+- **Tweak the appbar / dropdown layout:** the constants live on
+  `Renderer` (`kAppbarHeight`, `kDropdownWidth`, `kDropdownHeight`,
+  `kDropdownPadX`) and the colours are the `kColor*` arrays near the
+  top of `Renderer.cpp`.
 - **Add a Vulkan debug messenger:** extend `Application::createInstance`
   and add the `VK_EXT_debug_utils` extension in
   `Application::getRequiredExtensions`.
@@ -126,3 +135,9 @@ the compiled GLSL shaders are placed in `build/shaders/`.
 - Single render-finished semaphore across swapchain images triggers
   `VUID-vkQueueSubmit-pSignalSemaphores-00067` — the renderer keeps a
   `std::vector<VkSemaphore>` of per-image signal semaphores.
+- Destroying the atlas (image/view/sampler) while the GPU still has
+  pending reads of it trips the same family of validation errors as the
+  semaphore case above. `Renderer::rebuildAtlasForFont` starts with
+  `vkDeviceWaitIdle` and the inner transitions wait on
+  `vkQueueWaitIdle` to be safe; the descriptor set is rewritten via
+  `vkUpdateDescriptorSets` after the new image is uploaded.
