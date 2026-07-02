@@ -5,8 +5,6 @@ layout(location = 1) in vec2 inUV;
 
 layout(push_constant) uniform PushConstants {
     vec2 screenSize;
-    float sdSpread;
-    float sdSmoothing;
     vec4 color;
     float isRect;
 } pc;

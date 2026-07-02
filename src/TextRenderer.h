@@ -5,6 +5,9 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 
+#include <hb.h>
+#include <hb-ft.h>
+
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -41,8 +44,6 @@ public:
 
     void setScreenSize(uint32_t width, uint32_t height);
     void setFont(const std::string& fontPath, uint32_t fontPixelSize);
-    void setSdfParams(float spread, float smoothing);
-    float sdSpread() const { return sdSpread_; }
 
     void drawText(VkCommandBuffer commandBuffer,
                   const std::string& text,
@@ -83,11 +84,24 @@ private:
         float advance;
     };
 
+    struct ShapedGlyph
+    {
+        uint32_t glyphIndex;
+        float x;
+        float y;
+        float width;
+        float height;
+        float bearingX;
+        float bearingY;
+        float advance;
+        float uvMin[2];
+        float uvMax[2];
+    };
+
     struct PushConstants
     {
         float screenSize[2];
-        float sdSpread;
-        float sdSmoothing;
+        float padding[2];
         float color[4];
         float isRect;
         float padding2[3];
@@ -106,6 +120,8 @@ private:
                    float x, float y, float w, float h,
                    float u0, float v0, float u1, float v1);
 
+    std::vector<ShapedGlyph> shapeText(const std::string& text) const;
+
     VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
     VkCommandPool commandPool_ = VK_NULL_HANDLE;
@@ -115,11 +131,10 @@ private:
     uint32_t screenWidth_ = 0;
     uint32_t screenHeight_ = 0;
     uint32_t fontPixelSize_ = 0;
-    float sdSpread_ = 8.0f;
-    float sdSmoothing_ = 0.25f;
 
     FT_Library ftLibrary_ = nullptr;
     FT_Face ftFace_ = nullptr;
+    hb_font_t* hbFont_ = nullptr;
 
     VkImage atlasImage_ = VK_NULL_HANDLE;
     VkDeviceMemory atlasMemory_ = VK_NULL_HANDLE;

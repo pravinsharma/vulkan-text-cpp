@@ -4,6 +4,7 @@
   "description": "Vulkan + GLFW application",
   "dependencies": [
     "glfw3",
-    "freetype"
+    "freetype",
+    "harfbuzz"
   ]
 }

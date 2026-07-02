@@ -8,6 +8,9 @@
 #include <stdexcept>
 #include <vector>
 
+#include <hb.h>
+#include <hb-ft.h>
+
 #include "text.vert.spv.h"
 #include "text.frag.spv.h"
 #include "rect.frag.spv.h"
@@ -19,62 +22,6 @@ constexpr uint32_t kAtlasWidth = 1024;
 constexpr uint32_t kAtlasHeight = 1024;
 constexpr uint32_t kFirstChar = 32;
 constexpr uint32_t kNumChars = 95;
-constexpr int kSdfSpread = 8;
-
-void computeGlyphSDF(unsigned char* data, int width, int height, int spread)
-{
-    struct Point { int x; int y; };
-    std::vector<Point> boundary;
-
-    auto inside = [&](int x, int y) {
-        return x >= 0 && x < width && y >= 0 && y < height && data[y * width + x] > 127;
-    };
-
-    for (int y = 0; y < height; ++y)
-    {
-        for (int x = 0; x < width; ++x)
-        {
-            bool isInside = inside(x, y);
-            bool isBoundary = false;
-            for (int dy = -1; dy <= 1 && !isBoundary; ++dy)
-            {
-                for (int dx = -1; dx <= 1 && !isBoundary; ++dx)
-                {
-                    if (dx == 0 && dy == 0) continue;
-                    bool nbInside = inside(x + dx, y + dy);
-                    if (isInside != nbInside) isBoundary = true;
-                }
-            }
-            if (isBoundary) boundary.push_back({x, y});
-        }
-    }
-
-    if (boundary.empty()) return;
-
-    const float spreadF = static_cast<float>(spread);
-    for (int y = 0; y < height; ++y)
-    {
-        for (int x = 0; x < width; ++x)
-        {
-            bool isInside = inside(x, y);
-            float minSqDist = std::numeric_limits<float>::max();
-            for (const auto& p : boundary)
-            {
-                float dx = static_cast<float>(x - p.x);
-                float dy = static_cast<float>(y - p.y);
-                float sq = dx * dx + dy * dy;
-                if (sq < minSqDist) minSqDist = sq;
-            }
-            float dist = std::sqrt(minSqDist);
-            if (!isInside) dist = -dist;
-
-            float normalized = 0.5f + 0.5f * dist / spreadF;
-            if (normalized < 0.0f) normalized = 0.0f;
-            if (normalized > 1.0f) normalized = 1.0f;
-            data[y * width + x] = static_cast<unsigned char>(normalized * 255.0f);
-        }
-    }
-}
 
 uint32_t findMemoryType(VkPhysicalDevice physicalDevice,
                         uint32_t typeFilter,
@@ -158,6 +105,12 @@ void TextRenderer::init(const InitInfo& info, const std::string& fontPath, uint3
 
     FT_Set_Pixel_Sizes(ftFace_, 0, fontPixelSize);
 
+    hbFont_ = hb_ft_font_create(ftFace_, nullptr);
+    if (!hbFont_)
+    {
+        throw std::runtime_error("failed to create HarfBuzz font");
+    }
+
     createAtlas(fontPath, fontPixelSize);
     createAtlasImage();
     uploadAtlasImage();
@@ -169,6 +122,12 @@ void TextRenderer::init(const InitInfo& info, const std::string& fontPath, uint3
 
 void TextRenderer::shutdown()
 {
+    if (hbFont_)
+    {
+        hb_font_destroy(hbFont_);
+        hbFont_ = nullptr;
+    }
+
     if (device_ == VK_NULL_HANDLE) return;
 
     if (vertexBuffer_ != VK_NULL_HANDLE)
@@ -285,6 +244,12 @@ void TextRenderer::setScreenSize(uint32_t width, uint32_t height)
 
 void TextRenderer::setFont(const std::string& fontPath, uint32_t fontPixelSize)
 {
+    if (hbFont_)
+    {
+        hb_font_destroy(hbFont_);
+        hbFont_ = nullptr;
+    }
+
     if (ftFace_)
     {
         FT_Done_Face(ftFace_);
@@ -299,14 +264,14 @@ void TextRenderer::setFont(const std::string& fontPath, uint32_t fontPixelSize)
     FT_Set_Pixel_Sizes(ftFace_, 0, fontPixelSize);
     fontPixelSize_ = fontPixelSize;
 
+    hbFont_ = hb_ft_font_create(ftFace_, nullptr);
+    if (!hbFont_)
+    {
+        throw std::runtime_error("failed to create HarfBuzz font");
+    }
+
     createAtlas(fontPath, fontPixelSize);
     uploadAtlasImage();
-}
-
-void TextRenderer::setSdfParams(float spread, float smoothing)
-{
-    sdSpread_ = spread;
-    sdSmoothing_ = smoothing;
 }
 
 void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSize)
@@ -322,7 +287,13 @@ void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSi
     for (uint32_t c = 0; c < kNumChars; ++c)
     {
         const uint32_t charCode = kFirstChar + c;
-        if (FT_Load_Char(ftFace_, charCode, FT_LOAD_RENDER) != 0)
+        hb_codepoint_t glyphIndex = 0;
+        if (!hb_font_get_nominal_glyph(hbFont_, charCode, &glyphIndex))
+        {
+            continue;
+        }
+
+        if (FT_Load_Glyph(ftFace_, glyphIndex, FT_LOAD_RENDER) != 0)
         {
             continue;
         }
@@ -343,56 +314,43 @@ void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSi
             empty.uvMin[1] = 0.0f;
             empty.uvMax[0] = 0.0f;
             empty.uvMax[1] = 0.0f;
-            glyphs_[charCode] = empty;
+            glyphs_[glyphIndex] = empty;
             continue;
         }
 
-        const uint32_t tileW = w + kSdfSpread * 2;
-        const uint32_t tileH = h + kSdfSpread * 2;
-
-        if (penX + tileW + 1 > atlasWidth_)
+        if (penX + w + 1 > atlasWidth_)
         {
             penY += rowHeight + 1;
             penX = 1;
             rowHeight = 0;
         }
 
-        if (penY + tileH + 1 > atlasHeight_)
+        if (penY + h + 1 > atlasHeight_)
         {
             throw std::runtime_error("glyph atlas overflow");
         }
 
-        std::vector<unsigned char> tile(static_cast<size_t>(tileW) * tileH);
-        std::memset(tile.data(), 0, tile.size());
         for (uint32_t row = 0; row < h; ++row)
         {
             const unsigned char* src = g->bitmap.buffer + static_cast<intptr_t>(row) * g->bitmap.pitch;
-            unsigned char* dst = tile.data() + (row + kSdfSpread) * tileW + kSdfSpread;
+            unsigned char* dst = atlasPixels_.data() + (penY + row) * atlasWidth_ + penX;
             std::memcpy(dst, src, w);
         }
 
-        computeGlyphSDF(tile.data(), static_cast<int>(tileW), static_cast<int>(tileH), kSdfSpread);
-
-        for (uint32_t row = 0; row < tileH; ++row)
-        {
-            unsigned char* dst = atlasPixels_.data() + (penY + row) * atlasWidth_ + penX;
-            std::memcpy(dst, tile.data() + row * tileW, tileW);
-        }
-
         Glyph info{};
-        info.size[0] = static_cast<float>(tileW);
-        info.size[1] = static_cast<float>(tileH);
-        info.bearing[0] = static_cast<float>(g->bitmap_left) - static_cast<float>(kSdfSpread);
-        info.bearing[1] = static_cast<float>(g->bitmap_top) + static_cast<float>(kSdfSpread);
+        info.size[0] = static_cast<float>(w);
+        info.size[1] = static_cast<float>(h);
+        info.bearing[0] = static_cast<float>(g->bitmap_left);
+        info.bearing[1] = static_cast<float>(g->bitmap_top);
         info.advance = static_cast<float>(g->advance.x) / 64.0f;
         info.uvMin[0] = static_cast<float>(penX) / static_cast<float>(atlasWidth_);
         info.uvMin[1] = static_cast<float>(penY) / static_cast<float>(atlasHeight_);
-        info.uvMax[0] = static_cast<float>(penX + tileW) / static_cast<float>(atlasWidth_);
-        info.uvMax[1] = static_cast<float>(penY + tileH) / static_cast<float>(atlasHeight_);
-        glyphs_[charCode] = info;
+        info.uvMax[0] = static_cast<float>(penX + w) / static_cast<float>(atlasWidth_);
+        info.uvMax[1] = static_cast<float>(penY + h) / static_cast<float>(atlasHeight_);
+        glyphs_[glyphIndex] = info;
 
-        penX += tileW + 1;
-        if (tileH + 1 > rowHeight) rowHeight = tileH + 1;
+        penX += w + 1;
+        if (h + 1 > rowHeight) rowHeight = h + 1;
     }
 }
 
@@ -934,17 +892,74 @@ void TextRenderer::ensureVertexBufferCapacity(size_t vertexCount)
     vkMapMemory(device_, vertexBufferMemory_, 0, vertexBufferCapacity_, 0, &vertexBufferMapped_);
 }
 
+std::vector<TextRenderer::ShapedGlyph> TextRenderer::shapeText(const std::string& text) const
+{
+    std::vector<ShapedGlyph> result;
+    if (text.empty() || !hbFont_) return result;
+
+    hb_buffer_t* buffer = hb_buffer_create();
+    hb_buffer_add_utf8(buffer, text.c_str(), -1, 0, -1);
+    hb_buffer_set_direction(buffer, HB_DIRECTION_LTR);
+    hb_buffer_set_script(buffer, HB_SCRIPT_LATIN);
+    hb_buffer_set_language(buffer, hb_language_from_string("en", -1));
+    hb_shape(hbFont_, buffer, nullptr, 0);
+
+    unsigned int glyphCount = 0;
+    const hb_glyph_info_t* glyphInfos = hb_buffer_get_glyph_infos(buffer, &glyphCount);
+    const hb_glyph_position_t* glyphPositions = hb_buffer_get_glyph_positions(buffer, &glyphCount);
+
+    float penX = 0.0f;
+    for (unsigned int i = 0; i < glyphCount; ++i)
+    {
+        const hb_glyph_info_t& info = glyphInfos[i];
+        const hb_glyph_position_t& pos = glyphPositions[i];
+
+        ShapedGlyph sg{};
+        sg.glyphIndex = info.codepoint;
+        sg.x = penX + static_cast<float>(pos.x_offset) / 64.0f;
+        sg.y = static_cast<float>(pos.y_offset) / 64.0f;
+        sg.advance = static_cast<float>(pos.x_advance) / 64.0f;
+
+        auto it = glyphs_.find(sg.glyphIndex);
+        if (it != glyphs_.end())
+        {
+            const Glyph& gl = it->second;
+            sg.width = gl.size[0];
+            sg.height = gl.size[1];
+            sg.bearingX = gl.bearing[0];
+            sg.bearingY = gl.bearing[1];
+            sg.uvMin[0] = gl.uvMin[0];
+            sg.uvMin[1] = gl.uvMin[1];
+            sg.uvMax[0] = gl.uvMax[0];
+            sg.uvMax[1] = gl.uvMax[1];
+        }
+        else
+        {
+            sg.width = 0.0f;
+            sg.height = 0.0f;
+            sg.bearingX = 0.0f;
+            sg.bearingY = 0.0f;
+            sg.uvMin[0] = 0.0f;
+            sg.uvMin[1] = 0.0f;
+            sg.uvMax[0] = 0.0f;
+            sg.uvMax[1] = 0.0f;
+        }
+
+        result.push_back(sg);
+        penX += sg.advance;
+    }
+
+    hb_buffer_destroy(buffer);
+    return result;
+}
+
 float TextRenderer::measureText(const std::string& text) const
 {
     float width = 0.0f;
-    for (char ch : text)
+    std::vector<ShapedGlyph> shaped = shapeText(text);
+    for (const auto& sg : shaped)
     {
-        const uint32_t charCode = static_cast<unsigned char>(ch);
-        auto it = glyphs_.find(charCode);
-        if (it != glyphs_.end())
-        {
-            width += it->second.advance;
-        }
+        width += sg.advance;
     }
     return width;
 }
@@ -960,32 +975,25 @@ void TextRenderer::drawText(VkCommandBuffer commandBuffer,
 {
     if (text.empty()) return;
 
-    ensureVertexBufferCapacity(text.size() * 6);
+    std::vector<ShapedGlyph> shaped = shapeText(text);
+    if (shaped.empty()) return;
+
+    ensureVertexBufferCapacity(shaped.size() * 6);
 
     auto* out = static_cast<TextVertex*>(vertexBufferMapped_);
-    float penX = x;
-    const float penY = y;
     size_t vertexCount = 0;
 
-    for (char ch : text)
+    for (const auto& sg : shaped)
     {
-        const uint32_t charCode = static_cast<unsigned char>(ch);
-        auto it = glyphs_.find(charCode);
-        if (it == glyphs_.end()) continue;
+        if (sg.width <= 0.0f || sg.height <= 0.0f) continue;
 
-        const Glyph& gl = it->second;
-        if (gl.size[0] > 0.0f && gl.size[1] > 0.0f)
-        {
-            const float x0 = penX + gl.bearing[0];
-            const float y0 = penY - gl.bearing[1];
-            const float w = gl.size[0];
-            const float h = gl.size[1];
-            writeQuad(out + vertexCount, x0, y0, w, h,
-                      gl.uvMin[0], gl.uvMin[1], gl.uvMax[0], gl.uvMax[1]);
-            vertexCount += 6;
-        }
-
-        penX += gl.advance;
+        const float x0 = x + sg.x + sg.bearingX;
+        const float y0 = y + sg.y - sg.bearingY;
+        const float w = sg.width;
+        const float h = sg.height;
+        writeQuad(out + vertexCount, x0, y0, w, h,
+                  sg.uvMin[0], sg.uvMin[1], sg.uvMax[0], sg.uvMax[1]);
+        vertexCount += 6;
     }
 
     if (vertexCount == 0) return;
@@ -993,8 +1001,6 @@ void TextRenderer::drawText(VkCommandBuffer commandBuffer,
     PushConstants pc{};
     pc.screenSize[0] = static_cast<float>(screenWidth_);
     pc.screenSize[1] = static_cast<float>(screenHeight_);
-    pc.sdSpread = sdSpread_;
-    pc.sdSmoothing = sdSmoothing_;
     pc.color[0] = r;
     pc.color[1] = g;
     pc.color[2] = b;
@@ -1067,8 +1073,6 @@ void TextRenderer::drawRect(VkCommandBuffer commandBuffer,
     PushConstants pc{};
     pc.screenSize[0] = static_cast<float>(screenWidth_);
     pc.screenSize[1] = static_cast<float>(screenHeight_);
-    pc.sdSpread = kSdfSpread;
-    pc.sdSmoothing = 1.0f;
     pc.color[0] = r;
     pc.color[1] = g;
     pc.color[2] = b;
@@ -1081,12 +1085,12 @@ void TextRenderer::drawRect(VkCommandBuffer commandBuffer,
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
 
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipelineLayout_, 0, 1, &descriptorSet_, 0, nullptr);
-
     VkBuffer vertexBuffers[] = { vertexBuffer_ };
     VkDeviceSize offsets[] = { 0 };
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipelineLayout_, 0, 1, &descriptorSet_, 0, nullptr);
 
     vkCmdDraw(commandBuffer, 6, 1, 0, 0);
 }

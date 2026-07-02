@@ -26,6 +26,7 @@ endif()
 find_package(Vulkan REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(freetype CONFIG REQUIRED)
+find_package(harfbuzz CONFIG REQUIRED)
 
 # Compile GLSL shaders to SPIR-V at configure/build time.
 find_program(GLSLC glslc REQUIRED HINTS "$ENV{VULKAN_SDK}/Bin")
@@ -118,6 +119,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Vulkan::Vulkan
     glfw
     freetype
+    harfbuzz
 )
 
 set_source_files_properties(src/TextRenderer.cpp PROPERTIES
