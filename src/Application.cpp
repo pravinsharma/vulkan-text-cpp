@@ -46,8 +46,6 @@ void Application::initWindow()
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-    glfwWindowHint(GLFW_FLOATING, GLFW_TRUE);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
     window_ = glfwCreateWindow(kWindowWidth, kWindowHeight, "Vulkan FreeType Text", nullptr, nullptr);
     if (!window_)
@@ -55,9 +53,6 @@ void Application::initWindow()
         glfwTerminate();
         throw std::runtime_error("Failed to create GLFW window");
     }
-
-    glfwSetWindowPos(window_, 50, 50);
-    glfwSetWindowSize(window_, kWindowWidth, kWindowHeight);
 
     glfwSetWindowUserPointer(window_, this);
     glfwSetFramebufferSizeCallback(window_, framebufferResizeCallback);
@@ -187,10 +182,8 @@ void Application::drawFrame()
         const float textWidth = textRenderer_.measureText(kText);
         const float ascent = textRenderer_.fontAscent();
         const float H = static_cast<float>(swapchainExtent_.height);
-        const float textAreaTopFromTop = static_cast<float>(kAppbarHeight);
-        const float textAreaHeight = H - textAreaTopFromTop;
         const float x = (static_cast<float>(swapchainExtent_.width) - textWidth) * 0.5f;
-        const float y = (textAreaHeight - ascent) * 0.5f;
+        const float y = (H - ascent) * 0.5f;
         textRenderer_.drawText(cmd, kText, x, y, 1.0f, 1.0f, 1.0f, 1.0f);
     }
 
@@ -837,9 +830,8 @@ void Application::mouseButtonCallback(GLFWwindow* window, int button, int action
     const float centerX = static_cast<float>(fbW) * 0.5f;
     const float buttonX0 = centerX - kDropdownWidth * 0.5f;
     const float buttonX1 = centerX + kDropdownWidth * 0.5f;
-    const float H = static_cast<float>(fbH);
-    const float buttonY0 = H - 9.0f - kDropdownHeight;
-    const float buttonY1 = H - 9.0f;
+    const float buttonY0 = 9.0f;
+    const float buttonY1 = buttonY0 + kDropdownHeight;
 
     if (mx >= buttonX0 && mx < buttonX1 && my >= buttonY0 && my < buttonY1)
     {
@@ -851,8 +843,9 @@ void Application::mouseButtonCallback(GLFWwindow* window, int button, int action
     {
         for (size_t i = 0; i < app->fonts_.size(); ++i)
         {
-            const float itemY0 = H - static_cast<float>(kAppbarHeight) - static_cast<float>(i + 1) * kItemHeight;
-            const float itemY1 = H - static_cast<float>(kAppbarHeight) - static_cast<float>(i) * kItemHeight;
+            const float itemY0 = static_cast<float>(kAppbarHeight) +
+                                 static_cast<float>(i) * kItemHeight;
+            const float itemY1 = itemY0 + kItemHeight;
             if (mx >= buttonX0 && mx < buttonX1 && my >= itemY0 && my < itemY1)
             {
                 if (i != app->currentFontIndex_)
@@ -876,26 +869,27 @@ void Application::selectFont(size_t index)
 
 void Application::renderUi(VkCommandBuffer cmd, uint32_t imageWidth, uint32_t imageHeight)
 {
-    const float H = static_cast<float>(imageHeight);
+    const float W = static_cast<float>(imageWidth);
 
-    textRenderer_.drawRect(cmd, 0.0f, H - static_cast<float>(kAppbarHeight),
-                           static_cast<float>(imageWidth),
-                           static_cast<float>(kAppbarHeight), 0.15f, 0.15f, 0.18f, 1.0f);
+    textRenderer_.drawRect(cmd, 0.0f, 0.0f,
+                           W, static_cast<float>(kAppbarHeight),
+                           0.15f, 0.15f, 0.18f, 1.0f);
 
-    const float centerX = static_cast<float>(imageWidth) * 0.5f;
+    const float centerX = W * 0.5f;
     const float buttonX0 = centerX - kDropdownWidth * 0.5f;
-    const float buttonY0 = H - 9.0f - kDropdownHeight;
+    const float buttonY0 = 9.0f;
 
     if (dropdownOpen_)
     {
         for (size_t i = 0; i < fonts_.size(); ++i)
         {
-            const float itemY0 = H - static_cast<float>(kAppbarHeight) -
-                                 static_cast<float>(i + 1) * kItemHeight;
+            const float itemY0 = static_cast<float>(kAppbarHeight) +
+                                 static_cast<float>(i) * kItemHeight;
             const float r = (i == currentFontIndex_) ? 0.30f : 0.20f;
             const float g = (i == currentFontIndex_) ? 0.30f : 0.20f;
             const float b = (i == currentFontIndex_) ? 0.35f : 0.22f;
-            textRenderer_.drawRect(cmd, buttonX0, itemY0, static_cast<float>(kDropdownWidth),
+            textRenderer_.drawRect(cmd, buttonX0, itemY0,
+                                   static_cast<float>(kDropdownWidth),
                                    static_cast<float>(kItemHeight), r, g, b, 1.0f);
 
             const std::string& label = fonts_[i].label;
@@ -910,7 +904,8 @@ void Application::renderUi(VkCommandBuffer cmd, uint32_t imageWidth, uint32_t im
         }
     }
 
-    textRenderer_.drawRect(cmd, buttonX0, buttonY0, static_cast<float>(kDropdownWidth),
+    textRenderer_.drawRect(cmd, buttonX0, buttonY0,
+                           static_cast<float>(kDropdownWidth),
                            static_cast<float>(kDropdownHeight), 0.22f, 0.22f, 0.28f, 1.0f);
 
     const std::string& label = fonts_[currentFontIndex_].label;
