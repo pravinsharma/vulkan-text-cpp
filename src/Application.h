@@ -22,6 +22,12 @@ public:
     void run();
 
 private:
+    struct FontOption
+    {
+        std::string path;
+        std::string label;
+    };
+
     struct QueueFamilyIndices
     {
         uint32_t graphics = UINT32_MAX;
@@ -59,6 +65,9 @@ private:
     void recreateSwapchain();
     void cleanupSwapchain();
 
+    void renderUi(VkCommandBuffer cmd, uint32_t imageWidth, uint32_t imageHeight);
+    void selectFont(size_t index);
+
     bool isPhysicalDeviceSuitable(VkPhysicalDevice device);
     QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
     SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice device);
@@ -67,6 +76,8 @@ private:
     VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities);
 
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
+    static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
+    static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos);
     static std::vector<const char*> getRequiredExtensions();
 
     GLFWwindow* window_ = nullptr;
@@ -97,4 +108,17 @@ private:
     bool framebufferResized_ = false;
 
     TextRenderer textRenderer_;
+    TextRenderer uiRenderer_;
+
+    static constexpr uint32_t kAppbarHeight = 50;
+    static constexpr uint32_t kDropdownWidth = 280;
+    static constexpr uint32_t kDropdownHeight = 32;
+    static constexpr uint32_t kItemHeight = 28;
+    static constexpr uint32_t kUiFontPixelSize = 18;
+
+    std::vector<FontOption> fonts_;
+    size_t currentFontIndex_ = 0;
+    bool dropdownOpen_ = false;
+    double mouseX_ = 0.0;
+    double mouseY_ = 0.0;
 };

@@ -40,6 +40,7 @@ public:
     void shutdown();
 
     void setScreenSize(uint32_t width, uint32_t height);
+    void setFont(const std::string& fontPath, uint32_t fontPixelSize);
 
     void drawText(VkCommandBuffer commandBuffer,
                   const std::string& text,
@@ -57,7 +58,18 @@ public:
                           float b,
                           float a);
 
+    void drawRect(VkCommandBuffer commandBuffer,
+                  float x,
+                  float y,
+                  float w,
+                  float h,
+                  float r,
+                  float g,
+                  float b,
+                  float a);
+
     float measureText(const std::string& text) const;
+    float fontAscent() const { return static_cast<float>(fontPixelSize_); }
 
 private:
     struct Glyph
@@ -73,6 +85,7 @@ private:
     {
         float screenSize[2];
         float color[4];
+        float isRect;
     };
 
     void createAtlas(const std::string& fontPath, uint32_t fontPixelSize);
@@ -80,8 +93,12 @@ private:
     void uploadAtlasImage();
     void createDescriptorResources();
     void createPipeline();
+    void createRectPipeline();
     void createVertexBuffer();
     void ensureVertexBufferCapacity(size_t vertexCount);
+    void writeQuad(TextVertex* out,
+                   float x, float y, float w, float h,
+                   float u0, float v0, float u1, float v1);
 
     VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
@@ -108,9 +125,12 @@ private:
 
     VkShaderModule vertShader_ = VK_NULL_HANDLE;
     VkShaderModule fragShader_ = VK_NULL_HANDLE;
+    VkShaderModule rectFragShader_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
+    VkPipelineLayout rectPipelineLayout_ = VK_NULL_HANDLE;
+    VkPipeline rectPipeline_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet_ = VK_NULL_HANDLE;
 

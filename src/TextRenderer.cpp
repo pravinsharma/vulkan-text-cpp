@@ -1,11 +1,13 @@
 #include "TextRenderer.h"
 
 #include <cstring>
+#include <iostream>
 #include <stdexcept>
 #include <vector>
 
 #include "text.vert.spv.h"
 #include "text.frag.spv.h"
+#include "rect.frag.spv.h"
 
 namespace
 {
@@ -20,9 +22,11 @@ struct PushConstants
     float screenSize[2];
     float padding[2];
     float color[4];
+    float isRect;
+    float padding2[3];
 };
 
-static_assert(sizeof(PushConstants) == 32, "PushConstants must match GLSL std140 layout");
+static_assert(sizeof(PushConstants) == 48, "PushConstants must match GLSL std140 layout");
 
 uint32_t findMemoryType(VkPhysicalDevice physicalDevice,
                         uint32_t typeFilter,
@@ -111,6 +115,7 @@ void TextRenderer::init(const InitInfo& info, const std::string& fontPath, uint3
     uploadAtlasImage();
     createDescriptorResources();
     createPipeline();
+    createRectPipeline();
     createVertexBuffer();
 }
 
@@ -137,10 +142,22 @@ void TextRenderer::shutdown()
         pipeline_ = VK_NULL_HANDLE;
     }
 
+    if (rectPipeline_ != VK_NULL_HANDLE)
+    {
+        vkDestroyPipeline(device_, rectPipeline_, nullptr);
+        rectPipeline_ = VK_NULL_HANDLE;
+    }
+
     if (pipelineLayout_ != VK_NULL_HANDLE)
     {
         vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
         pipelineLayout_ = VK_NULL_HANDLE;
+    }
+
+    if (rectPipelineLayout_ != VK_NULL_HANDLE)
+    {
+        vkDestroyPipelineLayout(device_, rectPipelineLayout_, nullptr);
+        rectPipelineLayout_ = VK_NULL_HANDLE;
     }
 
     if (descriptorPool_ != VK_NULL_HANDLE)
@@ -165,6 +182,12 @@ void TextRenderer::shutdown()
     {
         vkDestroyShaderModule(device_, fragShader_, nullptr);
         fragShader_ = VK_NULL_HANDLE;
+    }
+
+    if (rectFragShader_ != VK_NULL_HANDLE)
+    {
+        vkDestroyShaderModule(device_, rectFragShader_, nullptr);
+        rectFragShader_ = VK_NULL_HANDLE;
     }
 
     if (atlasSampler_ != VK_NULL_HANDLE)
@@ -210,6 +233,26 @@ void TextRenderer::setScreenSize(uint32_t width, uint32_t height)
 {
     screenWidth_ = width;
     screenHeight_ = height;
+}
+
+void TextRenderer::setFont(const std::string& fontPath, uint32_t fontPixelSize)
+{
+    if (ftFace_)
+    {
+        FT_Done_Face(ftFace_);
+        ftFace_ = nullptr;
+    }
+
+    if (FT_New_Face(ftLibrary_, fontPath.c_str(), 0, &ftFace_) != 0)
+    {
+        throw std::runtime_error("failed to load font: " + fontPath);
+    }
+
+    FT_Set_Pixel_Sizes(ftFace_, 0, fontPixelSize);
+    fontPixelSize_ = fontPixelSize;
+
+    createAtlas(fontPath, fontPixelSize);
+    uploadAtlasImage();
 }
 
 void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSize)
@@ -608,7 +651,7 @@ void TextRenderer::createPipeline()
     VkPushConstantRange pushRange{};
     pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pushRange.offset = 0;
-    pushRange.size = 32;
+    pushRange.size = 48;
 
     VkPipelineLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -650,6 +693,139 @@ void TextRenderer::createPipeline()
     if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline_) != VK_SUCCESS)
     {
         throw std::runtime_error("failed to create graphics pipeline");
+    }
+}
+
+void TextRenderer::createRectPipeline()
+{
+    VkShaderModuleCreateInfo fragInfo{};
+    fragInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    fragInfo.codeSize = rect_frag_spv.size() * sizeof(uint32_t);
+    fragInfo.pCode = rect_frag_spv.data();
+
+    if (vkCreateShaderModule(device_, &fragInfo, nullptr, &rectFragShader_) != VK_SUCCESS)
+    {
+        throw std::runtime_error("failed to create rect fragment shader module");
+    }
+
+    VkPipelineShaderStageCreateInfo fragStage{};
+    fragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragStage.module = rectFragShader_;
+    fragStage.pName = "main";
+
+    VkPipelineShaderStageCreateInfo vertStage{};
+    vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertStage.module = vertShader_;
+    vertStage.pName = "main";
+
+    VkPipelineShaderStageCreateInfo stages[2] = { vertStage, fragStage };
+
+    VkVertexInputBindingDescription binding{};
+    binding.binding = 0;
+    binding.stride = sizeof(TextVertex);
+    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription attrs[2]{};
+    attrs[0].location = 0;
+    attrs[0].binding = 0;
+    attrs[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attrs[0].offset = offsetof(TextVertex, pos);
+    attrs[1].location = 1;
+    attrs[1].binding = 0;
+    attrs[1].format = VK_FORMAT_R32G32_SFLOAT;
+    attrs[1].offset = offsetof(TextVertex, uv);
+
+    VkPipelineVertexInputStateCreateInfo vertexInput{};
+    vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInput.vertexBindingDescriptionCount = 1;
+    vertexInput.pVertexBindingDescriptions = &binding;
+    vertexInput.vertexAttributeDescriptionCount = 2;
+    vertexInput.pVertexAttributeDescriptions = attrs;
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineColorBlendAttachmentState blendAttachment{};
+    blendAttachment.blendEnable = VK_TRUE;
+    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                     VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+    blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+
+    VkPipelineColorBlendStateCreateInfo colorBlending{};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &blendAttachment;
+
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushRange.offset = 0;
+    pushRange.size = 48;
+
+    VkPipelineLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layoutInfo.setLayoutCount = 1;
+    layoutInfo.pSetLayouts = &descriptorSetLayout_;
+    layoutInfo.pushConstantRangeCount = 1;
+    layoutInfo.pPushConstantRanges = &pushRange;
+
+    if (vkCreatePipelineLayout(device_, &layoutInfo, nullptr, &rectPipelineLayout_) != VK_SUCCESS)
+    {
+        throw std::runtime_error("failed to create rect pipeline layout");
+    }
+
+    std::vector<VkDynamicState> dynamicStates = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR,
+    };
+
+    VkPipelineDynamicStateCreateInfo dynamicState{};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+    dynamicState.pDynamicStates = dynamicStates.data();
+
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = stages;
+    pipelineInfo.pVertexInputState = &vertexInput;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.layout = rectPipelineLayout_;
+    pipelineInfo.renderPass = renderPass_;
+    pipelineInfo.subpass = 0;
+
+    if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &rectPipeline_) != VK_SUCCESS)
+    {
+        throw std::runtime_error("failed to create rect graphics pipeline");
     }
 }
 
@@ -735,21 +911,11 @@ void TextRenderer::drawText(VkCommandBuffer commandBuffer,
         {
             const float x0 = penX + gl.bearing[0];
             const float y0 = penY - gl.bearing[1];
-            const float x1 = x0 + gl.size[0];
-            const float y1 = y0 + gl.size[1];
-
-            const float u0 = gl.uvMin[0];
-            const float v0 = gl.uvMin[1];
-            const float u1 = gl.uvMax[0];
-            const float v1 = gl.uvMax[1];
-
-            out[vertexCount++] = {{x0, y0}, {u0, v0}};
-            out[vertexCount++] = {{x1, y0}, {u1, v0}};
-            out[vertexCount++] = {{x1, y1}, {u1, v1}};
-
-            out[vertexCount++] = {{x0, y0}, {u0, v0}};
-            out[vertexCount++] = {{x1, y1}, {u1, v1}};
-            out[vertexCount++] = {{x0, y1}, {u0, v1}};
+            const float w = gl.size[0];
+            const float h = gl.size[1];
+            writeQuad(out + vertexCount, x0, y0, w, h,
+                      gl.uvMin[0], gl.uvMin[1], gl.uvMax[0], gl.uvMax[1]);
+            vertexCount += 6;
         }
 
         penX += gl.advance;
@@ -764,6 +930,7 @@ void TextRenderer::drawText(VkCommandBuffer commandBuffer,
     pc.color[1] = g;
     pc.color[2] = b;
     pc.color[3] = a;
+    pc.isRect = 0.0f;
 
     vkCmdPushConstants(commandBuffer, pipelineLayout_,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -793,4 +960,62 @@ void TextRenderer::drawCenteredText(VkCommandBuffer commandBuffer,
     const float ascent = static_cast<float>(fontPixelSize_);
     const float y = (static_cast<float>(screenHeight_) + ascent) * 0.5f;
     drawText(commandBuffer, text, x, y, r, g, b, a);
+}
+
+void TextRenderer::writeQuad(TextVertex* out,
+                             float x, float y, float w, float h,
+                             float u0, float v0, float u1, float v1)
+{
+    const float x0 = x;
+    const float y0 = y;
+    const float x1 = x + w;
+    const float y1 = y + h;
+
+    out[0] = {{x0, y0}, {u0, v0}};
+    out[1] = {{x1, y0}, {u1, v0}};
+    out[2] = {{x1, y1}, {u1, v1}};
+
+    out[3] = {{x0, y0}, {u0, v0}};
+    out[4] = {{x1, y1}, {u1, v1}};
+    out[5] = {{x0, y1}, {u0, v1}};
+}
+
+void TextRenderer::drawRect(VkCommandBuffer commandBuffer,
+                            float x,
+                            float y,
+                            float w,
+                            float h,
+                            float r,
+                            float g,
+                            float b,
+                            float a)
+{
+    ensureVertexBufferCapacity(6);
+
+    auto* out = static_cast<TextVertex*>(vertexBufferMapped_);
+    writeQuad(out, x, y, w, h, 0.0f, 0.0f, 0.0f, 0.0f);
+
+    PushConstants pc{};
+    pc.screenSize[0] = static_cast<float>(screenWidth_);
+    pc.screenSize[1] = static_cast<float>(screenHeight_);
+    pc.color[0] = r;
+    pc.color[1] = g;
+    pc.color[2] = b;
+    pc.color[3] = a;
+    pc.isRect = 1.0f;
+
+    vkCmdPushConstants(commandBuffer, pipelineLayout_,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(PushConstants), &pc);
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipelineLayout_, 0, 1, &descriptorSet_, 0, nullptr);
+
+    VkBuffer vertexBuffers[] = { vertexBuffer_ };
+    VkDeviceSize offsets[] = { 0 };
+    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+
+    vkCmdDraw(commandBuffer, 6, 1, 0, 0);
 }

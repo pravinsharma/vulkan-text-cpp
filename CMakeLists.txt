@@ -33,16 +33,19 @@ find_program(GLSLC glslc REQUIRED HINTS "$ENV{VULKAN_SDK}/Bin")
 set(SHADER_SOURCES
     shaders/text.vert
     shaders/text.frag
+    shaders/rect.frag
 )
 
 set(SHADER_SPV
     ${CMAKE_CURRENT_BINARY_DIR}/shaders/text.vert.spv
     ${CMAKE_CURRENT_BINARY_DIR}/shaders/text.frag.spv
+    ${CMAKE_CURRENT_BINARY_DIR}/shaders/rect.frag.spv
 )
 
 set(SHADER_SPV_H
     ${CMAKE_CURRENT_BINARY_DIR}/shaders/text.vert.spv.h
     ${CMAKE_CURRENT_BINARY_DIR}/shaders/text.frag.spv.h
+    ${CMAKE_CURRENT_BINARY_DIR}/shaders/rect.frag.spv.h
 )
 
 add_custom_command(
@@ -52,6 +55,8 @@ add_custom_command(
         -o ${CMAKE_CURRENT_BINARY_DIR}/shaders/text.vert.spv
     COMMAND ${GLSLC} -fshader-stage=frag ${CMAKE_CURRENT_SOURCE_DIR}/shaders/text.frag
         -o ${CMAKE_CURRENT_BINARY_DIR}/shaders/text.frag.spv
+    COMMAND ${GLSLC} -fshader-stage=frag ${CMAKE_CURRENT_SOURCE_DIR}/shaders/rect.frag
+        -o ${CMAKE_CURRENT_BINARY_DIR}/shaders/rect.frag.spv
     DEPENDS ${SHADER_SOURCES}
     COMMENT "Compiling GLSL shaders to SPIR-V"
     VERBATIM
@@ -80,6 +85,19 @@ add_custom_command(
     DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/shaders/text.frag.spv
         ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake
     COMMENT "Embedding text.frag.spv into header"
+    VERBATIM
+)
+
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/shaders/rect.frag.spv.h
+    COMMAND ${CMAKE_COMMAND}
+        -DSPIRV_FILE=${CMAKE_CURRENT_BINARY_DIR}/shaders/rect.frag.spv
+        -DOUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/shaders/rect.frag.spv.h
+        -DVAR_NAME=rect_frag_spv
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/shaders/rect.frag.spv
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake
+    COMMENT "Embedding rect.frag.spv into header"
     VERBATIM
 )
 

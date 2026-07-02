@@ -13,7 +13,6 @@
 static constexpr uint32_t kWindowWidth = 800;
 static constexpr uint32_t kWindowHeight = 600;
 static constexpr uint32_t kFontPixelSize = 36;
-static const char* kFontPath = "C:/Windows/Fonts/segoeui.ttf";
 static const char* const kText =
     "A quick brown fox jumped over a lazy dog!";
 
@@ -47,6 +46,8 @@ void Application::initWindow()
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+    glfwWindowHint(GLFW_FLOATING, GLFW_TRUE);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
     window_ = glfwCreateWindow(kWindowWidth, kWindowHeight, "Vulkan FreeType Text", nullptr, nullptr);
     if (!window_)
@@ -55,12 +56,31 @@ void Application::initWindow()
         throw std::runtime_error("Failed to create GLFW window");
     }
 
+    glfwSetWindowPos(window_, 50, 50);
+    glfwSetWindowSize(window_, kWindowWidth, kWindowHeight);
+
     glfwSetWindowUserPointer(window_, this);
     glfwSetFramebufferSizeCallback(window_, framebufferResizeCallback);
+    glfwSetMouseButtonCallback(window_, mouseButtonCallback);
+    glfwSetCursorPosCallback(window_, cursorPosCallback);
 }
 
 void Application::initVulkan()
 {
+    fonts_ = {
+        {"C:/Windows/Fonts/segoeui.ttf",       "Segoe UI"},
+        {"C:/Windows/Fonts/arial.ttf",          "Arial"},
+        {"C:/Windows/Fonts/calibri.ttf",        "Calibri"},
+        {"C:/Windows/Fonts/tahoma.ttf",         "Tahoma"},
+        {"C:/Windows/Fonts/verdana.ttf",        "Verdana"},
+        {"C:/Windows/Fonts/times.ttf",          "Times New Roman"},
+        {"C:/Windows/Fonts/georgia.ttf",        "Georgia"},
+        {"C:/Windows/Fonts/cour.ttf",           "Courier New"},
+        {"C:/Windows/Fonts/consola.ttf",         "Consolas"},
+        {"C:/Windows/Fonts/comic.ttf",           "Comic Sans MS"},
+        {"C:/Windows/Fonts/impact.ttf",         "Impact"},
+    };
+
     createInstance();
     createSurface();
     pickPhysicalDevice();
@@ -81,7 +101,9 @@ void Application::initVulkan()
     info.renderPass = renderPass_;
     info.screenWidth = swapchainExtent_.width;
     info.screenHeight = swapchainExtent_.height;
-    textRenderer_.init(info, kFontPath, kFontPixelSize);
+    textRenderer_.init(info, fonts_[currentFontIndex_].path, kFontPixelSize);
+
+    uiRenderer_.init(info, "C:/Windows/Fonts/segoeui.ttf", kUiFontPixelSize);
 }
 
 void Application::mainLoop()
@@ -161,7 +183,18 @@ void Application::drawFrame()
     scissor.extent = swapchainExtent_;
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    textRenderer_.drawCenteredText(cmd, kText, 1.0f, 1.0f, 1.0f, 1.0f);
+    {
+        const float textWidth = textRenderer_.measureText(kText);
+        const float ascent = textRenderer_.fontAscent();
+        const float H = static_cast<float>(swapchainExtent_.height);
+        const float textAreaTopFromTop = static_cast<float>(kAppbarHeight);
+        const float textAreaHeight = H - textAreaTopFromTop;
+        const float x = (static_cast<float>(swapchainExtent_.width) - textWidth) * 0.5f;
+        const float y = (textAreaHeight - ascent) * 0.5f;
+        textRenderer_.drawText(cmd, kText, x, y, 1.0f, 1.0f, 1.0f, 1.0f);
+    }
+
+    renderUi(cmd, swapchainExtent_.width, swapchainExtent_.height);
 
     vkCmdEndRenderPass(cmd);
 
@@ -218,6 +251,7 @@ void Application::cleanup()
     }
 
     textRenderer_.shutdown();
+    uiRenderer_.shutdown();
 
     if (!swapchainImageViews_.empty())
     {
@@ -746,6 +780,7 @@ void Application::recreateSwapchain()
     imageInFlight_.assign(swapchainImages_.size(), VK_NULL_HANDLE);
 
     textRenderer_.setScreenSize(swapchainExtent_.width, swapchainExtent_.height);
+    uiRenderer_.setScreenSize(swapchainExtent_.width, swapchainExtent_.height);
 }
 
 void Application::cleanupSwapchain()
@@ -768,6 +803,127 @@ void Application::framebufferResizeCallback(GLFWwindow* window, int width, int h
     {
         app->framebufferResized_ = true;
     }
+}
+
+void Application::cursorPosCallback(GLFWwindow* window, double xpos, double ypos)
+{
+    auto* app = static_cast<Application*>(glfwGetWindowUserPointer(window));
+    if (!app) return;
+
+    int winW = 0, winH = 0;
+    glfwGetWindowSize(window, &winW, &winH);
+    int fbW = 0, fbH = 0;
+    glfwGetFramebufferSize(window, &fbW, &fbH);
+    const double sx = winW > 0 ? static_cast<double>(fbW) / winW : 1.0;
+    const double sy = winH > 0 ? static_cast<double>(fbH) / winH : 1.0;
+    app->mouseX_ = xpos * sx;
+    app->mouseY_ = ypos * sy;
+}
+
+void Application::mouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
+{
+    auto* app = static_cast<Application*>(glfwGetWindowUserPointer(window));
+    if (!app || button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS) return;
+
+    int winW = 0, winH = 0;
+    glfwGetWindowSize(window, &winW, &winH);
+    int fbW = 0, fbH = 0;
+    glfwGetFramebufferSize(window, &fbW, &fbH);
+    const double sx = winW > 0 ? static_cast<double>(fbW) / winW : 1.0;
+    const double sy = winH > 0 ? static_cast<double>(fbH) / winH : 1.0;
+    const double mx = app->mouseX_;
+    const double my = app->mouseY_;
+
+    const float centerX = static_cast<float>(fbW) * 0.5f;
+    const float buttonX0 = centerX - kDropdownWidth * 0.5f;
+    const float buttonX1 = centerX + kDropdownWidth * 0.5f;
+    const float H = static_cast<float>(fbH);
+    const float buttonY0 = H - 9.0f - kDropdownHeight;
+    const float buttonY1 = H - 9.0f;
+
+    if (mx >= buttonX0 && mx < buttonX1 && my >= buttonY0 && my < buttonY1)
+    {
+        app->dropdownOpen_ = !app->dropdownOpen_;
+        return;
+    }
+
+    if (app->dropdownOpen_)
+    {
+        for (size_t i = 0; i < app->fonts_.size(); ++i)
+        {
+            const float itemY0 = H - static_cast<float>(kAppbarHeight) - static_cast<float>(i + 1) * kItemHeight;
+            const float itemY1 = H - static_cast<float>(kAppbarHeight) - static_cast<float>(i) * kItemHeight;
+            if (mx >= buttonX0 && mx < buttonX1 && my >= itemY0 && my < itemY1)
+            {
+                if (i != app->currentFontIndex_)
+                {
+                    app->selectFont(i);
+                }
+                app->dropdownOpen_ = false;
+                return;
+            }
+        }
+        app->dropdownOpen_ = false;
+    }
+}
+
+void Application::selectFont(size_t index)
+{
+    if (index >= fonts_.size()) return;
+    currentFontIndex_ = index;
+    textRenderer_.setFont(fonts_[index].path, kFontPixelSize);
+}
+
+void Application::renderUi(VkCommandBuffer cmd, uint32_t imageWidth, uint32_t imageHeight)
+{
+    const float H = static_cast<float>(imageHeight);
+
+    textRenderer_.drawRect(cmd, 0.0f, H - static_cast<float>(kAppbarHeight),
+                           static_cast<float>(imageWidth),
+                           static_cast<float>(kAppbarHeight), 0.15f, 0.15f, 0.18f, 1.0f);
+
+    const float centerX = static_cast<float>(imageWidth) * 0.5f;
+    const float buttonX0 = centerX - kDropdownWidth * 0.5f;
+    const float buttonY0 = H - 9.0f - kDropdownHeight;
+
+    if (dropdownOpen_)
+    {
+        for (size_t i = 0; i < fonts_.size(); ++i)
+        {
+            const float itemY0 = H - static_cast<float>(kAppbarHeight) -
+                                 static_cast<float>(i + 1) * kItemHeight;
+            const float r = (i == currentFontIndex_) ? 0.30f : 0.20f;
+            const float g = (i == currentFontIndex_) ? 0.30f : 0.20f;
+            const float b = (i == currentFontIndex_) ? 0.35f : 0.22f;
+            textRenderer_.drawRect(cmd, buttonX0, itemY0, static_cast<float>(kDropdownWidth),
+                                   static_cast<float>(kItemHeight), r, g, b, 1.0f);
+
+            const std::string& label = fonts_[i].label;
+            const float labelWidth = uiRenderer_.measureText(label);
+            const float labelX = centerX - labelWidth * 0.5f;
+            const float itemCenterY = itemY0 + kItemHeight * 0.5f;
+            const float labelY = itemCenterY - uiRenderer_.fontAscent() * 0.5f;
+            const float textR = (i == currentFontIndex_) ? 1.0f : 0.85f;
+            const float textG = (i == currentFontIndex_) ? 1.0f : 0.85f;
+            const float textB = (i == currentFontIndex_) ? 1.0f : 0.85f;
+            uiRenderer_.drawText(cmd, label, labelX, labelY, textR, textG, textB, 1.0f);
+        }
+    }
+
+    textRenderer_.drawRect(cmd, buttonX0, buttonY0, static_cast<float>(kDropdownWidth),
+                           static_cast<float>(kDropdownHeight), 0.22f, 0.22f, 0.28f, 1.0f);
+
+    const std::string& label = fonts_[currentFontIndex_].label;
+    const float labelWidth = uiRenderer_.measureText(label);
+    const float labelX = centerX - labelWidth * 0.5f;
+    const float buttonCenterY = buttonY0 + kDropdownHeight * 0.5f;
+    const float labelY = buttonCenterY - uiRenderer_.fontAscent() * 0.5f;
+    uiRenderer_.drawText(cmd, label, labelX, labelY, 1.0f, 1.0f, 1.0f, 1.0f);
+
+    const float caretX = buttonX0 + static_cast<float>(kDropdownWidth) - 18.0f;
+    const float caretY = buttonY0 + kDropdownHeight * 0.5f - 0.75f;
+    const float caretHalf = 5.0f;
+    textRenderer_.drawRect(cmd, caretX - caretHalf, caretY, caretHalf * 2.0f, 1.5f, 0.8f, 0.8f, 0.85f, 1.0f);
 }
 
 std::vector<const char*> Application::getRequiredExtensions()

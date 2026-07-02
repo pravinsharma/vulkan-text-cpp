@@ -6,6 +6,7 @@ layout(location = 1) in vec2 inUV;
 layout(push_constant) uniform PushConstants {
     vec2 screenSize;
     vec4 color;
+    float isRect;
 } pc;
 
 layout(location = 0) out vec2 fragUV;
