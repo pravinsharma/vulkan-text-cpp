@@ -1,7 +1,11 @@
 #include "Application.h"
 
+#include "Renderer.h"
+
 #include <cstring>
 #include <iostream>
+#include <stdexcept>
+#include <vector>
 
 Application::Application() = default;
 
@@ -27,7 +31,7 @@ void Application::initWindow()
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-    window_ = glfwCreateWindow(800, 600, "Vulkan GLFW App", nullptr, nullptr);
+    window_ = glfwCreateWindow(1024, 768, "Vulkan GLFW App", nullptr, nullptr);
     if (!window_)
     {
         glfwTerminate();
@@ -41,6 +45,8 @@ void Application::initWindow()
 void Application::initVulkan()
 {
     createInstance();
+    createSurface();
+    renderer_ = new Renderer(instance_, surface_, window_);
 }
 
 void Application::createInstance()
@@ -92,16 +98,34 @@ void Application::createInstance()
     }
 }
 
+void Application::createSurface()
+{
+    if (glfwCreateWindowSurface(instance_, window_, nullptr, &surface_) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to create window surface");
+    }
+}
+
 void Application::mainLoop()
 {
     while (!glfwWindowShouldClose(window_))
     {
         glfwPollEvents();
+        renderer_->drawFrame();
     }
 }
 
 void Application::cleanup()
 {
+    delete renderer_;
+    renderer_ = nullptr;
+
+    if (surface_ != VK_NULL_HANDLE)
+    {
+        vkDestroySurfaceKHR(instance_, surface_, nullptr);
+        surface_ = VK_NULL_HANDLE;
+    }
+
     if (instance_ != VK_NULL_HANDLE)
     {
         vkDestroyInstance(instance_, nullptr);
@@ -118,10 +142,12 @@ void Application::cleanup()
 
 void Application::framebufferResizeCallback(GLFWwindow* window, int width, int height)
 {
+    (void)width;
+    (void)height;
     auto* app = static_cast<Application*>(glfwGetWindowUserPointer(window));
-    if (app)
+    if (app && app->renderer_)
     {
-        app->framebufferResized_ = true;
+        app->renderer_->setFramebufferResized();
     }
 }
 

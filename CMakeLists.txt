@@ -23,21 +23,52 @@ if(NOT DEFINED ENV{VULKAN_SDK})
     )
 endif()
 
-find_package(Vulkan REQUIRED)
+find_package(Vulkan REQUIRED COMPONENTS glslc)
 find_package(glfw3 CONFIG REQUIRED)
 
-add_executable(${PROJECT_NAME}
+set(SOURCES
     src/main.cpp
     src/Application.h
     src/Application.cpp
+    src/Renderer.h
+    src/Renderer.cpp
 )
 
-target_include_directories(${PROJECT_NAME} PRIVATE src)
+add_executable(${PROJECT_NAME} ${SOURCES})
+
+target_include_directories(${PROJECT_NAME} PRIVATE
+    src
+    third_party
+)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
     Vulkan::Vulkan
     glfw
 )
+
+# Compile GLSL shaders to SPIR-V with glslc.
+set(SHADERS
+    text.vert
+    text.frag
+)
+
+set(SPIRV_OUTPUTS)
+foreach(shader ${SHADERS})
+    set(spv ${CMAKE_CURRENT_BINARY_DIR}/shaders/${shader}.spv)
+    list(APPEND SPIRV_OUTPUTS ${spv})
+    add_custom_command(
+        OUTPUT ${spv}
+        COMMAND ${Vulkan_GLSLC_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}
+                -o ${spv}
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}
+        COMMENT "Compiling ${shader} -> ${shader}.spv"
+        VERBATIM
+    )
+endforeach()
+
+add_custom_target(compile_shaders DEPENDS ${SPIRV_OUTPUTS})
+add_dependencies(${PROJECT_NAME} compile_shaders)
 
 # Pull GLFW3's runtime DLL next to the executable on Windows.
 if(WIN32)
@@ -51,4 +82,5 @@ endif()
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     GLFW_INCLUDE_VULKAN
+    NOMINMAX
 )

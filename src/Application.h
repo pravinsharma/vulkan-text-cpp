@@ -7,6 +7,8 @@
 #include <stdexcept>
 #include <vector>
 
+class Renderer;
+
 class Application
 {
 public:
@@ -25,12 +27,13 @@ private:
     void cleanup();
 
     void createInstance();
+    void createSurface();
 
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
     static std::vector<const char*> getRequiredExtensions();
 
     GLFWwindow* window_ = nullptr;
-    VkInstance instance_ = VK_NULL_HANDLE;
-
-    bool framebufferResized_ = false;
+    VkInstance  instance_ = VK_NULL_HANDLE;
+    VkSurfaceKHR surface_ = VK_NULL_HANDLE;
+    Renderer*   renderer_ = nullptr;
 };
