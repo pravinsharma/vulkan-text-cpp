@@ -26,8 +26,6 @@ struct PushConstants
     float padding2[3];
 };
 
-static_assert(sizeof(PushConstants) == 48, "PushConstants must match GLSL std140 layout");
-
 uint32_t findMemoryType(VkPhysicalDevice physicalDevice,
                         uint32_t typeFilter,
                         VkMemoryPropertyFlags properties)

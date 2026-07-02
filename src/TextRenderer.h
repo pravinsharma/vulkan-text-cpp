@@ -84,9 +84,12 @@ private:
     struct PushConstants
     {
         float screenSize[2];
+        float padding[2];
         float color[4];
         float isRect;
+        float padding2[3];
     };
+    static_assert(sizeof(PushConstants) == 48, "PushConstants must match GLSL std140 layout and push constant range");
 
     void createAtlas(const std::string& fontPath, uint32_t fontPixelSize);
     void createAtlasImage();
