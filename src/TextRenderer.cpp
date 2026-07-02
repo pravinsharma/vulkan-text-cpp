@@ -19,12 +19,12 @@ constexpr uint32_t kAtlasWidth = 1024;
 constexpr uint32_t kAtlasHeight = 1024;
 constexpr uint32_t kFirstChar = 32;
 constexpr uint32_t kNumChars = 95;
-constexpr int kSdfSpread = 4;
+constexpr int kSdfSpread = 8;
 
 void computeGlyphSDF(unsigned char* data, int width, int height, int spread)
 {
-    constexpr float kBig = 1e20f;
-    std::vector<float> dist(static_cast<size_t>(width) * height, kBig);
+    struct Point { int x; int y; };
+    std::vector<Point> boundary;
 
     auto inside = [&](int x, int y) {
         return x >= 0 && x < width && y >= 0 && y < height && data[y * width + x] > 127;
@@ -34,49 +34,41 @@ void computeGlyphSDF(unsigned char* data, int width, int height, int spread)
     {
         for (int x = 0; x < width; ++x)
         {
-            if (!inside(x, y)) continue;
-            bool edge = !inside(x - 1, y) || !inside(x + 1, y) ||
-                        !inside(x, y - 1) || !inside(x, y + 1);
-            if (edge) dist[y * width + x] = 0.0f;
+            bool isInside = inside(x, y);
+            bool isBoundary = false;
+            for (int dy = -1; dy <= 1 && !isBoundary; ++dy)
+            {
+                for (int dx = -1; dx <= 1 && !isBoundary; ++dx)
+                {
+                    if (dx == 0 && dy == 0) continue;
+                    bool nbInside = inside(x + dx, y + dy);
+                    if (isInside != nbInside) isBoundary = true;
+                }
+            }
+            if (isBoundary) boundary.push_back({x, y});
         }
     }
 
-    for (int y = 0; y < height; ++y)
-    {
-        for (int x = 0; x < width; ++x)
-        {
-            float d = dist[y * width + x];
-            if (x > 0) d = std::min(d, dist[y * width + (x - 1)] + 1.0f);
-            if (y > 0) d = std::min(d, dist[(y - 1) * width + x] + 1.0f);
-            if (x > 0 && y > 0) d = std::min(d, dist[(y - 1) * width + (x - 1)] + 1.4142135623730951f);
-            if (x + 1 < width && y > 0) d = std::min(d, dist[(y - 1) * width + (x + 1)] + 1.4142135623730951f);
-            dist[y * width + x] = d;
-        }
-    }
-
-    for (int y = height - 1; y >= 0; --y)
-    {
-        for (int x = width - 1; x >= 0; --x)
-        {
-            float d = dist[y * width + x];
-            if (x + 1 < width) d = std::min(d, dist[y * width + (x + 1)] + 1.0f);
-            if (y + 1 < height) d = std::min(d, dist[(y + 1) * width + x] + 1.0f);
-            if (x + 1 < width && y + 1 < height) d = std::min(d, dist[(y + 1) * width + (x + 1)] + 1.4142135623730951f);
-            if (x > 0 && y + 1 < height) d = std::min(d, dist[(y + 1) * width + (x - 1)] + 1.4142135623730951f);
-            dist[y * width + x] = d;
-        }
-    }
+    if (boundary.empty()) return;
 
     const float spreadF = static_cast<float>(spread);
     for (int y = 0; y < height; ++y)
     {
         for (int x = 0; x < width; ++x)
         {
-            bool isInside = data[y * width + x] > 127;
-            float d = dist[y * width + x];
-            if (!isInside) d = -d;
+            bool isInside = inside(x, y);
+            float minSqDist = std::numeric_limits<float>::max();
+            for (const auto& p : boundary)
+            {
+                float dx = static_cast<float>(x - p.x);
+                float dy = static_cast<float>(y - p.y);
+                float sq = dx * dx + dy * dy;
+                if (sq < minSqDist) minSqDist = sq;
+            }
+            float dist = std::sqrt(minSqDist);
+            if (!isInside) dist = -dist;
 
-            float normalized = 0.5f + 0.5f * d / spreadF;
+            float normalized = 0.5f + 0.5f * dist / spreadF;
             if (normalized < 0.0f) normalized = 0.0f;
             if (normalized > 1.0f) normalized = 1.0f;
             data[y * width + x] = static_cast<unsigned char>(normalized * 255.0f);
@@ -458,8 +450,8 @@ void TextRenderer::createAtlasImage()
 
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerInfo.magFilter = VK_FILTER_LINEAR;
-    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.magFilter = VK_FILTER_NEAREST;
+    samplerInfo.minFilter = VK_FILTER_NEAREST;
     samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;

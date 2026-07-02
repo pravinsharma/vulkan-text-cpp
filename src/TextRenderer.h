@@ -115,8 +115,8 @@ private:
     uint32_t screenWidth_ = 0;
     uint32_t screenHeight_ = 0;
     uint32_t fontPixelSize_ = 0;
-    float sdSpread_ = 4.0f;
-    float sdSmoothing_ = 0.05f;
+    float sdSpread_ = 8.0f;
+    float sdSmoothing_ = 0.25f;
 
     FT_Library ftLibrary_ = nullptr;
     FT_Face ftFace_ = nullptr;

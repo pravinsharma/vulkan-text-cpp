@@ -20,7 +20,7 @@ void main() {
 
     float sdf = texture(atlas, fragUV).r;
     float signedDist = (sdf - 0.5) * pc.sdSpread;
-    float halfSmooth = pc.sdSmoothing;
+    float halfSmooth = max(pc.sdSmoothing, 0.001);
     float alpha = smoothstep(-halfSmooth, halfSmooth, signedDist);
     outColor = vec4(pc.color.rgb, alpha * pc.color.a);
 }
