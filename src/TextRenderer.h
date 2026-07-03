@@ -95,6 +95,7 @@ private:
     {
         uint32_t glyphIndex;
         uint32_t emojiGlyphIndex;
+        uint32_t codepoint;
         float x;
         float y;
         float width;

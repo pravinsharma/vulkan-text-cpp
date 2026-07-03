@@ -6,6 +6,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include <hb.h>
@@ -453,7 +454,7 @@ void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSi
             empty.uvMin[1] = 0.0f;
             empty.uvMax[0] = 0.0f;
             empty.uvMax[1] = 0.0f;
-            glyphs_[glyphIndex] = empty;
+            glyphs_[charCode] = empty;
             continue;
         }
 
@@ -486,7 +487,7 @@ void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSi
         info.uvMin[1] = static_cast<float>(atlasPenY_) / static_cast<float>(atlasHeight_);
         info.uvMax[0] = static_cast<float>(atlasPenX_ + w) / static_cast<float>(atlasWidth_);
         info.uvMax[1] = static_cast<float>(atlasPenY_ + h) / static_cast<float>(atlasHeight_);
-        glyphs_[glyphIndex] = info;
+        glyphs_[charCode] = info;
 
         atlasPenX_ += w + 1;
         if (h + 1 > atlasRowHeight_) atlasRowHeight_ = h + 1;
@@ -583,11 +584,17 @@ int TextRenderer::probeColrVersion() const
     return probeColrVersionForFace(ftFace_);
 }
 
-bool TextRenderer::ensureGlyph(uint32_t glyphIndex)
+bool TextRenderer::ensureGlyph(uint32_t codepoint)
 {
-    if (glyphs_.find(glyphIndex) != glyphs_.end())
+    if (glyphs_.find(codepoint) != glyphs_.end())
     {
         return true;
+    }
+
+    FT_UInt glyphIndex = FT_Get_Char_Index(ftFace_, codepoint);
+    if (glyphIndex == 0)
+    {
+        return false;
     }
 
     if (FT_Load_Glyph(ftFace_, glyphIndex, FT_LOAD_RENDER) != 0)
@@ -603,7 +610,7 @@ bool TextRenderer::ensureGlyph(uint32_t glyphIndex)
     {
         Glyph empty{};
         empty.advance = static_cast<float>(g->advance.x) / 64.0f;
-        glyphs_[glyphIndex] = empty;
+        glyphs_[codepoint] = empty;
         return true;
     }
 
@@ -636,7 +643,7 @@ bool TextRenderer::ensureGlyph(uint32_t glyphIndex)
     info.uvMin[1] = static_cast<float>(atlasPenY_) / static_cast<float>(atlasHeight_);
     info.uvMax[0] = static_cast<float>(atlasPenX_ + w) / static_cast<float>(atlasWidth_);
     info.uvMax[1] = static_cast<float>(atlasPenY_ + h) / static_cast<float>(atlasHeight_);
-    glyphs_[glyphIndex] = info;
+    glyphs_[codepoint] = info;
 
     atlasPenX_ += w + 1;
     if (h + 1 > atlasRowHeight_) atlasRowHeight_ = h + 1;
@@ -1648,6 +1655,7 @@ std::vector<TextRenderer::ShapedGlyph> TextRenderer::shapeText(const std::string
         ShapedGlyph sg{};
         sg.glyphIndex = info.codepoint;
         sg.emojiGlyphIndex = 0;
+        sg.codepoint = 0;
         sg.isColorGlyph = false;
         sg.useColrV1 = false;
         sg.width = 0.0f;
@@ -1659,9 +1667,13 @@ std::vector<TextRenderer::ShapedGlyph> TextRenderer::shapeText(const std::string
         sg.uvMax[0] = 0.0f;
         sg.uvMax[1] = 0.0f;
 
-        if (info.codepoint != 0)
+        const uint32_t cp = decodeUTF8(text, static_cast<size_t>(info.cluster));
+        sg.codepoint = cp;
+        const bool cpIsEmoji = (cp >= 0x2600 && cp <= 0x27BF) || (cp >= 0x1F300 && cp <= 0x1F9FF);
+
+        if (info.codepoint != 0 && !cpIsEmoji)
         {
-            auto it = glyphs_.find(info.codepoint);
+            auto it = glyphs_.find(cp);
             if (it != glyphs_.end())
             {
                 const Glyph& gl = it->second;
@@ -1674,9 +1686,9 @@ std::vector<TextRenderer::ShapedGlyph> TextRenderer::shapeText(const std::string
                 sg.uvMax[0] = gl.uvMax[0];
                 sg.uvMax[1] = gl.uvMax[1];
             }
-            else if (const_cast<TextRenderer*>(this)->ensureGlyph(info.codepoint))
+            else if (const_cast<TextRenderer*>(this)->ensureGlyph(cp))
             {
-                const Glyph& gl = glyphs_.at(info.codepoint);
+                const Glyph& gl = glyphs_.at(cp);
                 sg.width = gl.size[0];
                 sg.height = gl.size[1];
                 sg.bearingX = gl.bearing[0];
@@ -1695,9 +1707,7 @@ std::vector<TextRenderer::ShapedGlyph> TextRenderer::shapeText(const std::string
         }
         else if (emojiFace_)
         {
-            uint32_t clusterCp = decodeUTF8(text, static_cast<size_t>(info.cluster));
-
-            FT_UInt emojiGid = FT_Get_Char_Index(emojiFace_, clusterCp);
+            FT_UInt emojiGid = FT_Get_Char_Index(emojiFace_, cp);
             if (emojiGid != 0)
             {
                 if (FT_Load_Glyph(emojiFace_, emojiGid, FT_LOAD_RENDER | FT_LOAD_COLOR) == 0)
@@ -1712,6 +1722,26 @@ std::vector<TextRenderer::ShapedGlyph> TextRenderer::shapeText(const std::string
                     sg.x = penX;
                     sg.y = penY;
                     penX += sg.advance;
+                }
+            }
+            else if (hasColorGlyphs_ && info.codepoint != 0)
+            {
+                if (const_cast<TextRenderer*>(this)->ensureColorGlyph(info.codepoint))
+                {
+                    const ColorGlyphInfo& cl = colorGlyphs_.at(info.codepoint);
+                    sg.width = cl.size[0];
+                    sg.height = cl.size[1];
+                    sg.bearingX = cl.bearing[0];
+                    sg.bearingY = cl.bearing[1];
+                    sg.uvMin[0] = cl.uvMin[0];
+                    sg.uvMin[1] = cl.uvMin[1];
+                    sg.uvMax[0] = cl.uvMax[0];
+                    sg.uvMax[1] = cl.uvMax[1];
+                    sg.isColorGlyph = true;
+                    sg.x = penX;
+                    sg.y = penY;
+                    sg.advance = cl.advance;
+                    penX += cl.advance;
                 }
             }
         }
@@ -1780,8 +1810,8 @@ void TextRenderer::drawText(VkCommandBuffer commandBuffer,
         }
         if (!inColorAtlas && hasColorGlyphs_)
         {
-            inColorAtlas = ensureColorGlyph(sg.glyphIndex);
-            if (inColorAtlas) colorKey = sg.glyphIndex;
+            inColorAtlas = ensureColorGlyph(sg.codepoint);
+            if (inColorAtlas) colorKey = sg.codepoint;
         }
         if (inColorAtlas)
         {

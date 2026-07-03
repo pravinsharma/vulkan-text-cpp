@@ -70,7 +70,7 @@ void Application::initVulkan()
         {"C:/Windows/Fonts/seguiemj.ttf",  "Segoe UI Emoji"},
     };
 
-    const std::string kEmojiFontPath = "resources/Twemoji.Mozilla.ttf";
+    const std::string kEmojiFontPath = "C:/Windows/Fonts/seguiemj.ttf";
 
     createInstance();
     createSurface();
