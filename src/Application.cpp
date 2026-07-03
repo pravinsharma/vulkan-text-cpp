@@ -177,12 +177,13 @@ void Application::drawFrame()
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
     {
-        const float textWidth = textRenderer_.measureText(kText);
+        const std::string displayText = std::string(reinterpret_cast<const char *>(u8"Hello \U0001F600 Vulkan!"));
+        const float textWidth = textRenderer_.measureText(displayText);
         const float ascent = textRenderer_.fontAscent();
         const float H = static_cast<float>(swapchainExtent_.height);
         const float x = (static_cast<float>(swapchainExtent_.width) - textWidth) * 0.5f;
         const float y = (H - ascent) * 0.5f;
-        textRenderer_.drawText(cmd, std::string(reinterpret_cast<const char *>(u8"Hello \U0001F600 Vulkan!")), x, y, 1.0f, 1.0f, 1.0f, 1.0f);
+        textRenderer_.drawText(cmd, displayText, x, y, 1.0f, 1.0f, 1.0f, 1.0f);
     }
 
     renderUi(cmd, swapchainExtent_.width, swapchainExtent_.height);

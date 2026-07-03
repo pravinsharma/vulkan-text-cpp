@@ -2,9 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
-#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -25,6 +23,30 @@ constexpr uint32_t kAtlasWidth = 1024;
 constexpr uint32_t kAtlasHeight = 1024;
 constexpr uint32_t kFirstChar = 32;
 constexpr uint32_t kNumChars = 95;
+
+[[nodiscard]] uint32_t decodeUTF8(const std::string& text, size_t offset)
+{
+    if (offset >= text.size()) return 0;
+    unsigned char b = static_cast<unsigned char>(text[offset]);
+    if (b < 0x80) return b;
+    if (b < 0xE0)
+    {
+        if (offset + 1 >= text.size()) return 0xFFFD;
+        return ((b & 0x1Fu) << 6) | (static_cast<unsigned char>(text[offset + 1]) & 0x3Fu);
+    }
+    if (b < 0xF0)
+    {
+        if (offset + 2 >= text.size()) return 0xFFFD;
+        return ((b & 0x0Fu) << 12) |
+               ((static_cast<unsigned char>(text[offset + 1]) & 0x3Fu) << 6) |
+               (static_cast<unsigned char>(text[offset + 2]) & 0x3Fu);
+    }
+    if (offset + 3 >= text.size()) return 0xFFFD;
+    return ((b & 0x07u) << 18) |
+           ((static_cast<unsigned char>(text[offset + 1]) & 0x3Fu) << 12) |
+           ((static_cast<unsigned char>(text[offset + 2]) & 0x3Fu) << 6) |
+           (static_cast<unsigned char>(text[offset + 3]) & 0x3Fu);
+}
 
 int probeColrVersionForFace(FT_Face face)
 {
@@ -394,12 +416,12 @@ void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSi
     atlasPixels_.assign(atlasWidth_ * atlasHeight_, 0);
     colorAtlasPixels_.assign(kAtlasWidth * kAtlasHeight * 4, 0);
 
-    uint32_t penX = 1;
-    uint32_t penY = 1;
-    uint32_t rowHeight = 0;
-    uint32_t colorPenX = 1;
-    uint32_t colorPenY = 1;
-    uint32_t colorRowHeight = 0;
+    atlasPenX_ = 1;
+    atlasPenY_ = 1;
+    atlasRowHeight_ = 0;
+    colorPenX_ = 1;
+    colorPenY_ = 1;
+    colorRowHeight_ = 0;
 
     for (uint32_t c = 0; c < kNumChars; ++c)
     {
@@ -435,14 +457,14 @@ void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSi
             continue;
         }
 
-        if (penX + w + 1 > atlasWidth_)
+        if (atlasPenX_ + w + 1 > atlasWidth_)
         {
-            penY += rowHeight + 1;
-            penX = 1;
-            rowHeight = 0;
+            atlasPenY_ += atlasRowHeight_ + 1;
+            atlasPenX_ = 1;
+            atlasRowHeight_ = 0;
         }
 
-        if (penY + h + 1 > atlasHeight_)
+        if (atlasPenY_ + h + 1 > atlasHeight_)
         {
             throw std::runtime_error("glyph atlas overflow");
         }
@@ -450,7 +472,7 @@ void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSi
         for (uint32_t row = 0; row < h; ++row)
         {
             const unsigned char* src = g->bitmap.buffer + static_cast<intptr_t>(row) * g->bitmap.pitch;
-            unsigned char* dst = atlasPixels_.data() + (penY + row) * atlasWidth_ + penX;
+            unsigned char* dst = atlasPixels_.data() + (atlasPenY_ + row) * atlasWidth_ + atlasPenX_;
             std::memcpy(dst, src, w);
         }
 
@@ -460,14 +482,14 @@ void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSi
         info.bearing[0] = static_cast<float>(g->bitmap_left);
         info.bearing[1] = static_cast<float>(g->bitmap_top);
         info.advance = static_cast<float>(g->advance.x) / 64.0f;
-        info.uvMin[0] = static_cast<float>(penX) / static_cast<float>(atlasWidth_);
-        info.uvMin[1] = static_cast<float>(penY) / static_cast<float>(atlasHeight_);
-        info.uvMax[0] = static_cast<float>(penX + w) / static_cast<float>(atlasWidth_);
-        info.uvMax[1] = static_cast<float>(penY + h) / static_cast<float>(atlasHeight_);
+        info.uvMin[0] = static_cast<float>(atlasPenX_) / static_cast<float>(atlasWidth_);
+        info.uvMin[1] = static_cast<float>(atlasPenY_) / static_cast<float>(atlasHeight_);
+        info.uvMax[0] = static_cast<float>(atlasPenX_ + w) / static_cast<float>(atlasWidth_);
+        info.uvMax[1] = static_cast<float>(atlasPenY_ + h) / static_cast<float>(atlasHeight_);
         glyphs_[glyphIndex] = info;
 
-        penX += w + 1;
-        if (h + 1 > rowHeight) rowHeight = h + 1;
+        atlasPenX_ += w + 1;
+        if (h + 1 > atlasRowHeight_) atlasRowHeight_ = h + 1;
 
         if (FT_Load_Glyph(ftFace_, glyphIndex, FT_LOAD_RENDER | FT_LOAD_COLOR) != 0)
         {
@@ -489,14 +511,14 @@ void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSi
 
         hasColorGlyphs_ = true;
 
-        if (colorPenX + cw + 1 > kAtlasWidth)
+        if (colorPenX_ + cw + 1 > kAtlasWidth)
         {
-            colorPenY += colorRowHeight + 1;
-            colorPenX = 1;
-            colorRowHeight = 0;
+            colorPenY_ += colorRowHeight_ + 1;
+            colorPenX_ = 1;
+            colorRowHeight_ = 0;
         }
 
-        if (colorPenY + ch + 1 > kAtlasHeight)
+        if (colorPenY_ + ch + 1 > kAtlasHeight)
         {
             throw std::runtime_error("color glyph atlas overflow");
         }
@@ -504,7 +526,7 @@ void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSi
         for (uint32_t row = 0; row < ch; ++row)
         {
             const std::uint8_t* src = reinterpret_cast<const std::uint8_t*>(cg->bitmap.buffer) + static_cast<intptr_t>(row) * cg->bitmap.pitch;
-            std::uint8_t* dst = colorAtlasPixels_.data() + ((colorPenY + row) * kAtlasWidth + colorPenX) * 4;
+            std::uint8_t* dst = colorAtlasPixels_.data() + ((colorPenY_ + row) * kAtlasWidth + colorPenX_) * 4;
             std::memcpy(dst, src, static_cast<size_t>(cw) * 4);
         }
 
@@ -514,14 +536,14 @@ void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSi
         colorInfo.bearing[0] = static_cast<float>(cg->bitmap_left);
         colorInfo.bearing[1] = static_cast<float>(cg->bitmap_top);
         colorInfo.advance = static_cast<float>(cg->advance.x) / 64.0f;
-        colorInfo.uvMin[0] = static_cast<float>(colorPenX) / static_cast<float>(kAtlasWidth);
-        colorInfo.uvMin[1] = static_cast<float>(colorPenY) / static_cast<float>(kAtlasHeight);
-        colorInfo.uvMax[0] = static_cast<float>(colorPenX + cw) / static_cast<float>(kAtlasWidth);
-        colorInfo.uvMax[1] = static_cast<float>(colorPenY + ch) / static_cast<float>(kAtlasHeight);
+        colorInfo.uvMin[0] = static_cast<float>(colorPenX_) / static_cast<float>(kAtlasWidth);
+        colorInfo.uvMin[1] = static_cast<float>(colorPenY_) / static_cast<float>(kAtlasHeight);
+        colorInfo.uvMax[0] = static_cast<float>(colorPenX_ + cw) / static_cast<float>(kAtlasWidth);
+        colorInfo.uvMax[1] = static_cast<float>(colorPenY_ + ch) / static_cast<float>(kAtlasHeight);
         colorGlyphs_[glyphIndex] = colorInfo;
 
-        colorPenX += cw + 1;
-        if (ch + 1 > colorRowHeight) colorRowHeight = ch + 1;
+        colorPenX_ += cw + 1;
+        if (ch + 1 > colorRowHeight_) colorRowHeight_ = ch + 1;
     }
 
     if (colrV1_)
@@ -559,6 +581,68 @@ bool TextRenderer::probeFaceHasColorGlyphs() const
 int TextRenderer::probeColrVersion() const
 {
     return probeColrVersionForFace(ftFace_);
+}
+
+bool TextRenderer::ensureGlyph(uint32_t glyphIndex)
+{
+    if (glyphs_.find(glyphIndex) != glyphs_.end())
+    {
+        return true;
+    }
+
+    if (FT_Load_Glyph(ftFace_, glyphIndex, FT_LOAD_RENDER) != 0)
+    {
+        return false;
+    }
+
+    const FT_GlyphSlot g = ftFace_->glyph;
+    const uint32_t w = g->bitmap.width;
+    const uint32_t h = g->bitmap.rows;
+
+    if (w == 0 || h == 0)
+    {
+        Glyph empty{};
+        empty.advance = static_cast<float>(g->advance.x) / 64.0f;
+        glyphs_[glyphIndex] = empty;
+        return true;
+    }
+
+    if (atlasPenX_ + w + 1 > atlasWidth_)
+    {
+        atlasPenY_ += atlasRowHeight_ + 1;
+        atlasPenX_ = 1;
+        atlasRowHeight_ = 0;
+    }
+
+    if (atlasPenY_ + h + 1 > atlasHeight_)
+    {
+        return false;
+    }
+
+    for (uint32_t row = 0; row < h; ++row)
+    {
+        const unsigned char* src = g->bitmap.buffer + static_cast<intptr_t>(row) * g->bitmap.pitch;
+        unsigned char* dst = atlasPixels_.data() + (atlasPenY_ + row) * atlasWidth_ + atlasPenX_;
+        std::memcpy(dst, src, w);
+    }
+
+    Glyph info{};
+    info.size[0] = static_cast<float>(w);
+    info.size[1] = static_cast<float>(h);
+    info.bearing[0] = static_cast<float>(g->bitmap_left);
+    info.bearing[1] = static_cast<float>(g->bitmap_top);
+    info.advance = static_cast<float>(g->advance.x) / 64.0f;
+    info.uvMin[0] = static_cast<float>(atlasPenX_) / static_cast<float>(atlasWidth_);
+    info.uvMin[1] = static_cast<float>(atlasPenY_) / static_cast<float>(atlasHeight_);
+    info.uvMax[0] = static_cast<float>(atlasPenX_ + w) / static_cast<float>(atlasWidth_);
+    info.uvMax[1] = static_cast<float>(atlasPenY_ + h) / static_cast<float>(atlasHeight_);
+    glyphs_[glyphIndex] = info;
+
+    atlasPenX_ += w + 1;
+    if (h + 1 > atlasRowHeight_) atlasRowHeight_ = h + 1;
+    atlasDirty_ = true;
+
+    return true;
 }
 
 void TextRenderer::setEmojiFont(const std::string& fontPath)
@@ -1130,8 +1214,7 @@ void TextRenderer::uploadAtlasImage()
     vkDestroyBuffer(device_, stagingBuffer, nullptr);
     vkFreeMemory(device_, stagingMemory, nullptr);
 
-    atlasPixels_.clear();
-    atlasPixels_.shrink_to_fit();
+    atlasDirty_ = false;
 }
 
 void TextRenderer::createDescriptorResources()
@@ -1591,6 +1674,18 @@ std::vector<TextRenderer::ShapedGlyph> TextRenderer::shapeText(const std::string
                 sg.uvMax[0] = gl.uvMax[0];
                 sg.uvMax[1] = gl.uvMax[1];
             }
+            else if (const_cast<TextRenderer*>(this)->ensureGlyph(info.codepoint))
+            {
+                const Glyph& gl = glyphs_.at(info.codepoint);
+                sg.width = gl.size[0];
+                sg.height = gl.size[1];
+                sg.bearingX = gl.bearing[0];
+                sg.bearingY = gl.bearing[1];
+                sg.uvMin[0] = gl.uvMin[0];
+                sg.uvMin[1] = gl.uvMin[1];
+                sg.uvMax[0] = gl.uvMax[0];
+                sg.uvMax[1] = gl.uvMax[1];
+            }
             sg.x = penX + static_cast<float>(pos.x_offset) / 64.0f;
             sg.y = penY + static_cast<float>(pos.y_offset) / 64.0f;
             sg.advance = static_cast<float>(pos.x_advance) / 64.0f;
@@ -1600,15 +1695,7 @@ std::vector<TextRenderer::ShapedGlyph> TextRenderer::shapeText(const std::string
         }
         else if (emojiFace_)
         {
-            uint32_t clusterCp = 0;
-            if (info.cluster < text.size())
-            {
-                clusterCp = static_cast<unsigned char>(text[info.cluster]);
-                if ((clusterCp & 0x80) != 0)
-                {
-                    clusterCp = static_cast<uint32_t>(text[info.cluster]);
-                }
-            }
+            uint32_t clusterCp = decodeUTF8(text, static_cast<size_t>(info.cluster));
 
             FT_UInt emojiGid = FT_Get_Char_Index(emojiFace_, clusterCp);
             if (emojiGid != 0)
@@ -1739,6 +1826,12 @@ void TextRenderer::drawText(VkCommandBuffer commandBuffer,
                       sg.uvMin[0], sg.uvMin[1], sg.uvMax[0], sg.uvMax[1],
                       sg.isColorGlyph ? 1.0f : 0.0f);
             vertexCount += 6;
+        }
+
+        if (atlasDirty_)
+        {
+            uploadAtlasImage();
+            atlasDirty_ = false;
         }
 
         if (colorAtlasDirty_)

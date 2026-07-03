@@ -143,6 +143,7 @@ private:
     void createColorAtlasImage();
     void uploadColorAtlasImage();
     void buildColorAtlas();
+    bool ensureGlyph(uint32_t glyphIndex);
     bool ensureColorGlyph(uint32_t glyphIndex);
     bool ensureColorGlyphFromFace(uint32_t glyphIndex, FT_Face face);
     bool probeFaceHasColorGlyphs() const;
@@ -184,7 +185,11 @@ private:
     std::unordered_map<uint32_t, Glyph> glyphs_;
     std::unordered_map<uint32_t, ColorGlyphInfo> colorGlyphs_;
     bool hasColorGlyphs_ = false;
+    bool atlasDirty_ = false;
     bool colorAtlasDirty_ = false;
+    uint32_t atlasPenX_ = 1;
+    uint32_t atlasPenY_ = 1;
+    uint32_t atlasRowHeight_ = 0;
     uint32_t colorPenX_ = 1;
     uint32_t colorPenY_ = 1;
     uint32_t colorRowHeight_ = 0;
