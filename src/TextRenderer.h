@@ -9,9 +9,12 @@
 #include <hb-ft.h>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "ColrV1Renderer.h"
 
 struct TextVertex
 {
@@ -102,6 +105,7 @@ private:
         float uvMin[2];
         float uvMax[2];
         bool isColorGlyph;
+        bool useColrV1;
     };
 
     struct ColorGlyphInfo
@@ -200,4 +204,6 @@ private:
     VkDeviceMemory vertexBufferMemory_ = VK_NULL_HANDLE;
     size_t vertexBufferCapacity_ = 0;
     void* vertexBufferMapped_ = nullptr;
+
+    std::unique_ptr<ColrV1Renderer> colrV1_;
 };

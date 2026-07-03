@@ -5,6 +5,7 @@
   "dependencies": [
     "glfw3",
     "freetype",
-    "harfbuzz"
+    "harfbuzz",
+    "libtess2"
   ]
 }

@@ -13,14 +13,14 @@
 static constexpr uint32_t kWindowWidth = 800;
 static constexpr uint32_t kWindowHeight = 600;
 static constexpr uint32_t kFontPixelSize = 36;
-static const char* const kText =
+static const char *const kText =
     "A quick brown fox jumped over a lazy dog!";
 
 namespace
 {
-VkResult CreateDebugUtilsMessengerEXT(VkInstance, const VkDebugUtilsMessengerCreateInfoEXT*,
-                                      const VkAllocationCallbacks*, VkDebugUtilsMessengerEXT*) { return VK_SUCCESS; }
-void DestroyDebugUtilsMessengerEXT(VkInstance, VkDebugUtilsMessengerEXT, const VkAllocationCallbacks*) {}
+    VkResult CreateDebugUtilsMessengerEXT(VkInstance, const VkDebugUtilsMessengerCreateInfoEXT *,
+                                          const VkAllocationCallbacks *, VkDebugUtilsMessengerEXT *) { return VK_SUCCESS; }
+    void DestroyDebugUtilsMessengerEXT(VkInstance, VkDebugUtilsMessengerEXT, const VkAllocationCallbacks *) {}
 }
 
 Application::Application() = default;
@@ -63,21 +63,14 @@ void Application::initWindow()
 void Application::initVulkan()
 {
     fonts_ = {
-        {"C:/Windows/Fonts/segoeui.ttf",       "Segoe UI"},
-        {"C:/Windows/Fonts/arial.ttf",          "Arial"},
-        {"C:/Windows/Fonts/calibri.ttf",        "Calibri"},
-        {"C:/Windows/Fonts/tahoma.ttf",         "Tahoma"},
-        {"C:/Windows/Fonts/verdana.ttf",        "Verdana"},
-        {"C:/Windows/Fonts/times.ttf",          "Times New Roman"},
-        {"C:/Windows/Fonts/georgia.ttf",        "Georgia"},
-        {"C:/Windows/Fonts/cour.ttf",           "Courier New"},
-        {"C:/Windows/Fonts/consola.ttf",         "Consolas"},
-        {"C:/Windows/Fonts/comic.ttf",           "Comic Sans MS"},
-        {"C:/Windows/Fonts/impact.ttf",         "Impact"},
-        {"C:/Windows/Fonts/seguiemj.ttf",       "Segoe UI Emoji"},
+        {"C:/Windows/Fonts/segoeui.ttf",   "Segoe UI"},
+        {"C:/Windows/Fonts/calibri.ttf",   "Calibri"},
+        {"C:/Windows/Fonts/verdana.ttf",   "Verdana"},
+        {"C:/Windows/Fonts/consola.ttf",   "Consolas"},
+        {"C:/Windows/Fonts/seguiemj.ttf",  "Segoe UI Emoji"},
     };
 
-    const std::string kEmojiFontPath = "C:/Windows/Fonts/seguiemj.ttf";
+    const std::string kEmojiFontPath = "resources/Twemoji.Mozilla.ttf";
 
     createInstance();
     createSurface();
@@ -156,13 +149,13 @@ void Application::drawFrame()
     }
 
     VkClearValue clearValue{};
-    clearValue.color = { { 0.08f, 0.08f, 0.12f, 1.0f } };
+    clearValue.color = {{0.08f, 0.08f, 0.12f, 1.0f}};
 
     VkRenderPassBeginInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     renderPassInfo.renderPass = renderPass_;
     renderPassInfo.framebuffer = swapchainFramebuffers_[imageIndex];
-    renderPassInfo.renderArea.offset = { 0, 0 };
+    renderPassInfo.renderArea.offset = {0, 0};
     renderPassInfo.renderArea.extent = swapchainExtent_;
     renderPassInfo.clearValueCount = 1;
     renderPassInfo.pClearValues = &clearValue;
@@ -179,7 +172,7 @@ void Application::drawFrame()
     vkCmdSetViewport(cmd, 0, 1, &viewport);
 
     VkRect2D scissor{};
-    scissor.offset = { 0, 0 };
+    scissor.offset = {0, 0};
     scissor.extent = swapchainExtent_;
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
@@ -189,7 +182,7 @@ void Application::drawFrame()
         const float H = static_cast<float>(swapchainExtent_.height);
         const float x = (static_cast<float>(swapchainExtent_.width) - textWidth) * 0.5f;
         const float y = (H - ascent) * 0.5f;
-        textRenderer_.drawText(cmd, std::string(reinterpret_cast<const char*>(u8"Hello \U0001F600 Vulkan!")), x, y, 1.0f, 1.0f, 1.0f, 1.0f);
+        textRenderer_.drawText(cmd, std::string(reinterpret_cast<const char *>(u8"Hello \U0001F600 Vulkan!")), x, y, 1.0f, 1.0f, 1.0f, 1.0f);
     }
 
     renderUi(cmd, swapchainExtent_.width, swapchainExtent_.height);
@@ -253,12 +246,14 @@ void Application::cleanup()
 
     if (!swapchainImageViews_.empty())
     {
-        for (auto view : swapchainImageViews_) vkDestroyImageView(device_, view, nullptr);
+        for (auto view : swapchainImageViews_)
+            vkDestroyImageView(device_, view, nullptr);
         swapchainImageViews_.clear();
     }
     if (!swapchainFramebuffers_.empty())
     {
-        for (auto fb : swapchainFramebuffers_) vkDestroyFramebuffer(device_, fb, nullptr);
+        for (auto fb : swapchainFramebuffers_)
+            vkDestroyFramebuffer(device_, fb, nullptr);
         swapchainFramebuffers_.clear();
     }
     if (renderPass_ != VK_NULL_HANDLE)
@@ -273,17 +268,20 @@ void Application::cleanup()
     }
     if (!inFlightFences_.empty())
     {
-        for (auto f : inFlightFences_) vkDestroyFence(device_, f, nullptr);
+        for (auto f : inFlightFences_)
+            vkDestroyFence(device_, f, nullptr);
         inFlightFences_.clear();
     }
     if (!renderFinishedSemaphores_.empty())
     {
-        for (auto s : renderFinishedSemaphores_) vkDestroySemaphore(device_, s, nullptr);
+        for (auto s : renderFinishedSemaphores_)
+            vkDestroySemaphore(device_, s, nullptr);
         renderFinishedSemaphores_.clear();
     }
     if (!imageAvailableSemaphores_.empty())
     {
-        for (auto s : imageAvailableSemaphores_) vkDestroySemaphore(device_, s, nullptr);
+        for (auto s : imageAvailableSemaphores_)
+            vkDestroySemaphore(device_, s, nullptr);
         imageAvailableSemaphores_.clear();
     }
     if (commandPool_ != VK_NULL_HANDLE)
@@ -338,8 +336,8 @@ void Application::createInstance()
     std::vector<VkLayerProperties> availableLayers(layerCount);
     vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
 
-    const char* validationLayer = "VK_LAYER_KHRONOS_validation";
-    for (const auto& layer : availableLayers)
+    const char *validationLayer = "VK_LAYER_KHRONOS_validation";
+    for (const auto &layer : availableLayers)
     {
         if (std::strcmp(layer.layerName, validationLayer) == 0)
         {
@@ -375,7 +373,7 @@ void Application::pickPhysicalDevice()
     std::vector<VkPhysicalDevice> devices(deviceCount);
     vkEnumeratePhysicalDevices(instance_, &deviceCount, devices.data());
 
-    for (const auto& device : devices)
+    for (const auto &device : devices)
     {
         if (isPhysicalDeviceSuitable(device))
         {
@@ -395,10 +393,12 @@ void Application::pickPhysicalDevice()
 bool Application::isPhysicalDeviceSuitable(VkPhysicalDevice device)
 {
     QueueFamilyIndices indices = findQueueFamilies(device);
-    if (!indices.isComplete()) return false;
+    if (!indices.isComplete())
+        return false;
 
     auto swapchainSupport = querySwapchainSupport(device);
-    if (swapchainSupport.formats.empty() || swapchainSupport.presentModes.empty()) return false;
+    if (swapchainSupport.formats.empty() || swapchainSupport.presentModes.empty())
+        return false;
 
     return true;
 }
@@ -421,9 +421,11 @@ Application::QueueFamilyIndices Application::findQueueFamilies(VkPhysicalDevice 
 
         VkBool32 presentSupport = VK_FALSE;
         vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface_, &presentSupport);
-        if (presentSupport) indices.present = i;
+        if (presentSupport)
+            indices.present = i;
 
-        if (indices.isComplete()) break;
+        if (indices.isComplete())
+            break;
     }
 
     return indices;
@@ -454,9 +456,9 @@ Application::SwapchainSupportDetails Application::querySwapchainSupport(VkPhysic
     return details;
 }
 
-VkSurfaceFormatKHR Application::chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats)
+VkSurfaceFormatKHR Application::chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR> &formats)
 {
-    for (const auto& format : formats)
+    for (const auto &format : formats)
     {
         if (format.format == VK_FORMAT_B8G8R8A8_SRGB && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
         {
@@ -466,16 +468,17 @@ VkSurfaceFormatKHR Application::chooseSwapSurfaceFormat(const std::vector<VkSurf
     return formats[0];
 }
 
-VkPresentModeKHR Application::chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& modes)
+VkPresentModeKHR Application::chooseSwapPresentMode(const std::vector<VkPresentModeKHR> &modes)
 {
-    for (const auto& mode : modes)
+    for (const auto &mode : modes)
     {
-        if (mode == VK_PRESENT_MODE_MAILBOX_KHR) return mode;
+        if (mode == VK_PRESENT_MODE_MAILBOX_KHR)
+            return mode;
     }
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
-VkExtent2D Application::chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities)
+VkExtent2D Application::chooseSwapExtent(const VkSurfaceCapabilitiesKHR &capabilities)
 {
     if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max())
     {
@@ -486,8 +489,7 @@ VkExtent2D Application::chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabil
     glfwGetFramebufferSize(window_, &width, &height);
     VkExtent2D actualExtent = {
         static_cast<uint32_t>(width),
-        static_cast<uint32_t>(height)
-    };
+        static_cast<uint32_t>(height)};
     actualExtent.width = std::clamp(actualExtent.width,
                                     capabilities.minImageExtent.width,
                                     capabilities.maxImageExtent.width);
@@ -499,7 +501,7 @@ VkExtent2D Application::chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabil
 
 void Application::createLogicalDevice()
 {
-    std::set<uint32_t> uniqueQueueFamilies = { queueIndices_.graphics, queueIndices_.present };
+    std::set<uint32_t> uniqueQueueFamilies = {queueIndices_.graphics, queueIndices_.present};
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
     float queuePriority = 1.0f;
     for (uint32_t qf : uniqueQueueFamilies)
@@ -514,7 +516,7 @@ void Application::createLogicalDevice()
 
     VkPhysicalDeviceFeatures deviceFeatures{};
 
-    const char* deviceExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    const char *deviceExtensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -529,8 +531,8 @@ void Application::createLogicalDevice()
     vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
     std::vector<VkLayerProperties> availableLayers(layerCount);
     vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
-    const char* validationLayer = "VK_LAYER_KHRONOS_validation";
-    for (const auto& layer : availableLayers)
+    const char *validationLayer = "VK_LAYER_KHRONOS_validation";
+    for (const auto &layer : availableLayers)
     {
         if (std::strcmp(layer.layerName, validationLayer) == 0)
         {
@@ -602,8 +604,8 @@ void Application::createImageViews()
         createInfo.image = swapchainImages_[i];
         createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
         createInfo.format = swapchainImageFormat_;
-        createInfo.components = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
-                                  VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+        createInfo.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+                                 VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
         createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         createInfo.subresourceRange.baseMipLevel = 0;
         createInfo.subresourceRange.levelCount = 1;
@@ -665,7 +667,7 @@ void Application::createFramebuffers()
     swapchainFramebuffers_.resize(swapchainImageViews_.size());
     for (size_t i = 0; i < swapchainImageViews_.size(); ++i)
     {
-        VkImageView attachments[] = { swapchainImageViews_[i] };
+        VkImageView attachments[] = {swapchainImageViews_[i]};
 
         VkFramebufferCreateInfo framebufferInfo{};
         framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -758,7 +760,8 @@ void Application::recreateSwapchain()
 
     cleanupSwapchain();
 
-    for (auto s : renderFinishedSemaphores_) vkDestroySemaphore(device_, s, nullptr);
+    for (auto s : renderFinishedSemaphores_)
+        vkDestroySemaphore(device_, s, nullptr);
     renderFinishedSemaphores_.clear();
 
     createSwapchain();
@@ -768,7 +771,7 @@ void Application::recreateSwapchain()
     VkSemaphoreCreateInfo semaphoreInfo{};
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     renderFinishedSemaphores_.resize(swapchainImages_.size());
-    for (auto& s : renderFinishedSemaphores_)
+    for (auto &s : renderFinishedSemaphores_)
     {
         if (vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &s) != VK_SUCCESS)
         {
@@ -783,9 +786,11 @@ void Application::recreateSwapchain()
 
 void Application::cleanupSwapchain()
 {
-    for (auto view : swapchainImageViews_) vkDestroyImageView(device_, view, nullptr);
+    for (auto view : swapchainImageViews_)
+        vkDestroyImageView(device_, view, nullptr);
     swapchainImageViews_.clear();
-    for (auto fb : swapchainFramebuffers_) vkDestroyFramebuffer(device_, fb, nullptr);
+    for (auto fb : swapchainFramebuffers_)
+        vkDestroyFramebuffer(device_, fb, nullptr);
     swapchainFramebuffers_.clear();
     if (swapchain_ != VK_NULL_HANDLE)
     {
@@ -794,19 +799,20 @@ void Application::cleanupSwapchain()
     }
 }
 
-void Application::framebufferResizeCallback(GLFWwindow* window, int width, int height)
+void Application::framebufferResizeCallback(GLFWwindow *window, int width, int height)
 {
-    auto* app = static_cast<Application*>(glfwGetWindowUserPointer(window));
+    auto *app = static_cast<Application *>(glfwGetWindowUserPointer(window));
     if (app)
     {
         app->framebufferResized_ = true;
     }
 }
 
-void Application::cursorPosCallback(GLFWwindow* window, double xpos, double ypos)
+void Application::cursorPosCallback(GLFWwindow *window, double xpos, double ypos)
 {
-    auto* app = static_cast<Application*>(glfwGetWindowUserPointer(window));
-    if (!app) return;
+    auto *app = static_cast<Application *>(glfwGetWindowUserPointer(window));
+    if (!app)
+        return;
 
     int winW = 0, winH = 0;
     glfwGetWindowSize(window, &winW, &winH);
@@ -818,10 +824,11 @@ void Application::cursorPosCallback(GLFWwindow* window, double xpos, double ypos
     app->mouseY_ = ypos * sy;
 }
 
-void Application::mouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
+void Application::mouseButtonCallback(GLFWwindow *window, int button, int action, int mods)
 {
-    auto* app = static_cast<Application*>(glfwGetWindowUserPointer(window));
-    if (!app || button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS) return;
+    auto *app = static_cast<Application *>(glfwGetWindowUserPointer(window));
+    if (!app || button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS)
+        return;
 
     int winW = 0, winH = 0;
     glfwGetWindowSize(window, &winW, &winH);
@@ -867,7 +874,8 @@ void Application::mouseButtonCallback(GLFWwindow* window, int button, int action
 
 void Application::selectFont(size_t index)
 {
-    if (index >= fonts_.size()) return;
+    if (index >= fonts_.size())
+        return;
     currentFontIndex_ = index;
     textRenderer_.setFont(fonts_[index].path, kFontPixelSize);
 }
@@ -897,7 +905,7 @@ void Application::renderUi(VkCommandBuffer cmd, uint32_t imageWidth, uint32_t im
                                    static_cast<float>(kDropdownWidth),
                                    static_cast<float>(kItemHeight), r, g, b, 1.0f);
 
-            const std::string& label = fonts_[i].label;
+            const std::string &label = fonts_[i].label;
             const float labelWidth = uiRenderer_.measureText(label);
             const float labelX = centerX - labelWidth * 0.5f;
             const float itemCenterY = itemY0 + kItemHeight * 0.5f;
@@ -913,7 +921,7 @@ void Application::renderUi(VkCommandBuffer cmd, uint32_t imageWidth, uint32_t im
                            static_cast<float>(kDropdownWidth),
                            static_cast<float>(kDropdownHeight), 0.22f, 0.22f, 0.28f, 1.0f);
 
-    const std::string& label = fonts_[currentFontIndex_].label;
+    const std::string &label = fonts_[currentFontIndex_].label;
     const float labelWidth = uiRenderer_.measureText(label);
     const float labelX = centerX - labelWidth * 0.5f;
     const float buttonCenterY = buttonY0 + kDropdownHeight * 0.5f;
@@ -926,9 +934,9 @@ void Application::renderUi(VkCommandBuffer cmd, uint32_t imageWidth, uint32_t im
     textRenderer_.drawRect(cmd, caretX - caretHalf, caretY, caretHalf * 2.0f, 1.5f, 0.8f, 0.8f, 0.85f, 1.0f);
 }
 
-std::vector<const char*> Application::getRequiredExtensions()
+std::vector<const char *> Application::getRequiredExtensions()
 {
     uint32_t glfwExtensionCount = 0;
-    const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
-    return { glfwExtensions, glfwExtensions + glfwExtensionCount };
+    const char **glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+    return {glfwExtensions, glfwExtensions + glfwExtensionCount};
 }

@@ -27,6 +27,7 @@ find_package(Vulkan REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(freetype CONFIG REQUIRED)
 find_package(harfbuzz CONFIG REQUIRED)
+find_package(unofficial-libtess2 CONFIG REQUIRED)
 
 # Compile GLSL shaders to SPIR-V at configure/build time.
 find_program(GLSLC glslc REQUIRED HINTS "$ENV{VULKAN_SDK}/Bin")
@@ -35,18 +36,24 @@ set(SHADER_SOURCES
     shaders/text.vert
     shaders/text.frag
     shaders/rect.frag
+    shaders/colrv1.vert
+    shaders/colrv1.frag
 )
 
 set(SHADER_SPV
     ${CMAKE_CURRENT_BINARY_DIR}/shaders/text.vert.spv
     ${CMAKE_CURRENT_BINARY_DIR}/shaders/text.frag.spv
     ${CMAKE_CURRENT_BINARY_DIR}/shaders/rect.frag.spv
+    ${CMAKE_CURRENT_BINARY_DIR}/shaders/colrv1.vert.spv
+    ${CMAKE_CURRENT_BINARY_DIR}/shaders/colrv1.frag.spv
 )
 
 set(SHADER_SPV_H
     ${CMAKE_CURRENT_BINARY_DIR}/shaders/text.vert.spv.h
     ${CMAKE_CURRENT_BINARY_DIR}/shaders/text.frag.spv.h
     ${CMAKE_CURRENT_BINARY_DIR}/shaders/rect.frag.spv.h
+    ${CMAKE_CURRENT_BINARY_DIR}/shaders/colrv1.vert.spv.h
+    ${CMAKE_CURRENT_BINARY_DIR}/shaders/colrv1.frag.spv.h
 )
 
 add_custom_command(
@@ -58,6 +65,10 @@ add_custom_command(
         -o ${CMAKE_CURRENT_BINARY_DIR}/shaders/text.frag.spv
     COMMAND ${GLSLC} -fshader-stage=frag ${CMAKE_CURRENT_SOURCE_DIR}/shaders/rect.frag
         -o ${CMAKE_CURRENT_BINARY_DIR}/shaders/rect.frag.spv
+    COMMAND ${GLSLC} -fshader-stage=vert ${CMAKE_CURRENT_SOURCE_DIR}/shaders/colrv1.vert
+        -o ${CMAKE_CURRENT_BINARY_DIR}/shaders/colrv1.vert.spv
+    COMMAND ${GLSLC} -fshader-stage=frag ${CMAKE_CURRENT_SOURCE_DIR}/shaders/colrv1.frag
+        -o ${CMAKE_CURRENT_BINARY_DIR}/shaders/colrv1.frag.spv
     DEPENDS ${SHADER_SOURCES}
     COMMENT "Compiling GLSL shaders to SPIR-V"
     VERBATIM
@@ -102,12 +113,40 @@ add_custom_command(
     VERBATIM
 )
 
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/shaders/colrv1.vert.spv.h
+    COMMAND ${CMAKE_COMMAND}
+        -DSPIRV_FILE=${CMAKE_CURRENT_BINARY_DIR}/shaders/colrv1.vert.spv
+        -DOUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/shaders/colrv1.vert.spv.h
+        -DVAR_NAME=colrv1_vert_spv
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/shaders/colrv1.vert.spv
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake
+    COMMENT "Embedding colrv1.vert.spv into header"
+    VERBATIM
+)
+
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/shaders/colrv1.frag.spv.h
+    COMMAND ${CMAKE_COMMAND}
+        -DSPIRV_FILE=${CMAKE_CURRENT_BINARY_DIR}/shaders/colrv1.frag.spv
+        -DOUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/shaders/colrv1.frag.spv.h
+        -DVAR_NAME=colrv1_frag_spv
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/shaders/colrv1.frag.spv
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake
+    COMMENT "Embedding colrv1.frag.spv into header"
+    VERBATIM
+)
+
 add_executable(${PROJECT_NAME}
     src/main.cpp
     src/Application.h
     src/Application.cpp
     src/TextRenderer.h
     src/TextRenderer.cpp
+    src/ColrV1Renderer.h
+    src/ColrV1Renderer.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE
@@ -120,9 +159,14 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     glfw
     freetype
     harfbuzz
+    unofficial::libtess2::libtess2
 )
 
 set_source_files_properties(src/TextRenderer.cpp PROPERTIES
+    OBJECT_DEPENDS "${SHADER_SPV_H}"
+)
+
+set_source_files_properties(src/ColrV1Renderer.cpp PROPERTIES
     OBJECT_DEPENDS "${SHADER_SPV_H}"
 )
 

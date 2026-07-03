@@ -142,6 +142,17 @@ void TextRenderer::init(const InitInfo& info, const std::string& fontPath, uint3
         setEmojiFont(emojiFontPath_);
     }
 
+    ColrV1Renderer::InitInfo colrInfo{};
+    colrInfo.physicalDevice = physicalDevice_;
+    colrInfo.device = device_;
+    colrInfo.commandPool = commandPool_;
+    colrInfo.graphicsQueue = graphicsQueue_;
+    colrInfo.renderPass = renderPass_;
+    colrInfo.screenWidth = screenWidth_;
+    colrInfo.screenHeight = screenHeight_;
+    colrV1_ = std::make_unique<ColrV1Renderer>();
+    colrV1_->init(colrInfo);
+
     createAtlas(fontPath, fontPixelSize);
     createAtlasImage();
     uploadAtlasImage();
@@ -164,6 +175,8 @@ void TextRenderer::shutdown()
         hb_font_destroy(hbFont_);
         hbFont_ = nullptr;
     }
+
+    colrV1_.reset();
 
     if (device_ == VK_NULL_HANDLE) return;
 
@@ -307,6 +320,10 @@ void TextRenderer::setScreenSize(uint32_t width, uint32_t height)
 {
     screenWidth_ = width;
     screenHeight_ = height;
+    if (colrV1_)
+    {
+        colrV1_->setScreenSize(width, height);
+    }
 }
 
 void TextRenderer::setFont(const std::string& fontPath, uint32_t fontPixelSize)
@@ -342,6 +359,21 @@ void TextRenderer::setFont(const std::string& fontPath, uint32_t fontPixelSize)
     if (!emojiFontPath_.empty() && !emojiFace_)
     {
         setEmojiFont(emojiFontPath_);
+    }
+
+    colrV1_.reset();
+    if (colrVersion_ == 2)
+    {
+        ColrV1Renderer::InitInfo colrInfo{};
+        colrInfo.physicalDevice = physicalDevice_;
+        colrInfo.device = device_;
+        colrInfo.commandPool = commandPool_;
+        colrInfo.graphicsQueue = graphicsQueue_;
+        colrInfo.renderPass = renderPass_;
+        colrInfo.screenWidth = screenWidth_;
+        colrInfo.screenHeight = screenHeight_;
+        colrV1_ = std::make_unique<ColrV1Renderer>();
+        colrV1_->init(colrInfo);
     }
 
     createAtlas(fontPath, fontPixelSize);
@@ -489,6 +521,27 @@ void TextRenderer::createAtlas(const std::string& fontPath, uint32_t fontPixelSi
         colorPenX += cw + 1;
         if (ch + 1 > colorRowHeight) colorRowHeight = ch + 1;
     }
+
+    if (colrV1_)
+    {
+        for (uint32_t c = 0; c < kNumChars; ++c)
+        {
+            const uint32_t charCode = kFirstChar + c;
+            hb_codepoint_t glyphIndex = 0;
+            if (!hb_font_get_nominal_glyph(hbFont_, charCode, &glyphIndex))
+            {
+                continue;
+            }
+            if (colrV1_->hasGlyph(glyphIndex))
+            {
+                continue;
+            }
+            if (colrV1_->ensureGlyph(glyphIndex, ftFace_))
+            {
+                hasColorGlyphs_ = true;
+            }
+        }
+    }
 }
 
 bool TextRenderer::probeFaceHasColorGlyphs() const
@@ -544,6 +597,12 @@ bool TextRenderer::ensureColorGlyph(uint32_t glyphIndex)
 {
     if (colorGlyphs_.find(glyphIndex) != colorGlyphs_.end())
     {
+        return true;
+    }
+
+    if (colrV1_ && colrV1_->ensureGlyph(glyphIndex, ftFace_))
+    {
+        hasColorGlyphs_ = true;
         return true;
     }
 
@@ -830,11 +889,6 @@ void TextRenderer::uploadColorAtlasImage()
     vkDestroyBuffer(device_, stagingBuffer, nullptr);
     vkFreeMemory(device_, stagingMemory, nullptr);
 
-    colorAtlasPixels_.clear();
-    colorAtlasPixels_.shrink_to_fit();
-    colorPenX_ = 1;
-    colorPenY_ = 1;
-    colorRowHeight_ = 0;
     colorAtlasDirty_ = false;
 }
 
@@ -843,10 +897,9 @@ void TextRenderer::buildColorAtlas()
     colorAtlasPixels_.assign(kAtlasWidth * kAtlasHeight * 4, 0);
     colorGlyphs_.clear();
     hasColorGlyphs_ = false;
-
-    uint32_t penX = 1;
-    uint32_t penY = 1;
-    uint32_t rowHeight = 0;
+    colorPenX_ = 1;
+    colorPenY_ = 1;
+    colorRowHeight_ = 0;
 
     for (uint32_t c = 0; c < kNumChars; ++c)
     {
@@ -877,14 +930,14 @@ void TextRenderer::buildColorAtlas()
 
         hasColorGlyphs_ = true;
 
-        if (penX + w + 1 > kAtlasWidth)
+        if (colorPenX_ + w + 1 > kAtlasWidth)
         {
-            penY += rowHeight + 1;
-            penX = 1;
-            rowHeight = 0;
+            colorPenY_ += colorRowHeight_ + 1;
+            colorPenX_ = 1;
+            colorRowHeight_ = 0;
         }
 
-        if (penY + h + 1 > kAtlasHeight)
+        if (colorPenY_ + h + 1 > kAtlasHeight)
         {
             throw std::runtime_error("color glyph atlas overflow");
         }
@@ -892,7 +945,7 @@ void TextRenderer::buildColorAtlas()
         for (uint32_t row = 0; row < h; ++row)
         {
             const std::uint8_t* src = reinterpret_cast<const std::uint8_t*>(g->bitmap.buffer) + static_cast<intptr_t>(row) * g->bitmap.pitch;
-            std::uint8_t* dst = colorAtlasPixels_.data() + ((penY + row) * kAtlasWidth + penX) * 4;
+            std::uint8_t* dst = colorAtlasPixels_.data() + ((colorPenY_ + row) * kAtlasWidth + colorPenX_) * 4;
             std::memcpy(dst, src, static_cast<size_t>(w) * 4);
         }
 
@@ -902,14 +955,14 @@ void TextRenderer::buildColorAtlas()
         info.bearing[0] = static_cast<float>(g->bitmap_left);
         info.bearing[1] = static_cast<float>(g->bitmap_top);
         info.advance = static_cast<float>(g->advance.x) / 64.0f;
-        info.uvMin[0] = static_cast<float>(penX) / static_cast<float>(kAtlasWidth);
-        info.uvMin[1] = static_cast<float>(penY) / static_cast<float>(kAtlasHeight);
-        info.uvMax[0] = static_cast<float>(penX + w) / static_cast<float>(kAtlasWidth);
-        info.uvMax[1] = static_cast<float>(penY + h) / static_cast<float>(kAtlasHeight);
+        info.uvMin[0] = static_cast<float>(colorPenX_) / static_cast<float>(kAtlasWidth);
+        info.uvMin[1] = static_cast<float>(colorPenY_) / static_cast<float>(kAtlasHeight);
+        info.uvMax[0] = static_cast<float>(colorPenX_ + w) / static_cast<float>(kAtlasWidth);
+        info.uvMax[1] = static_cast<float>(colorPenY_ + h) / static_cast<float>(kAtlasHeight);
         colorGlyphs_[glyphIndex] = info;
 
-        penX += w + 1;
-        if (h + 1 > rowHeight) rowHeight = h + 1;
+        colorPenX_ += w + 1;
+        if (h + 1 > colorRowHeight_) colorRowHeight_ = h + 1;
     }
 }
 
@@ -1486,6 +1539,36 @@ std::vector<TextRenderer::ShapedGlyph> TextRenderer::shapeText(const std::string
     std::vector<ShapedGlyph> result;
     if (text.empty() || !hbFont_) return result;
 
+    const auto utf8Advance = [](const char* p, size_t& i, size_t len) -> uint32_t {
+        if (i >= len) return 0;
+        unsigned char c = static_cast<unsigned char>(p[i]);
+        i++;
+        if (c < 0x80) return c;
+        if ((c & 0xE0) == 0xC0 && i < len) {
+            uint32_t cp = ((c & 0x1F) << 6) | (static_cast<unsigned char>(p[i++]) & 0x3F);
+            return cp;
+        }
+        if ((c & 0xF0) == 0xE0 && i + 1 < len) {
+            uint32_t cp = ((c & 0x0F) << 12);
+            cp |= ((static_cast<unsigned char>(p[i]) & 0x3F) << 6); ++i;
+            cp |= (static_cast<unsigned char>(p[i]) & 0x3F); ++i;
+            return cp;
+        }
+        if ((c & 0xF8) == 0xF0 && i + 2 < len) {
+            uint32_t cp = ((c & 0x07) << 18);
+            cp |= ((static_cast<unsigned char>(p[i]) & 0x3F) << 12); ++i;
+            cp |= ((static_cast<unsigned char>(p[i]) & 0x3F) << 6); ++i;
+            cp |= (static_cast<unsigned char>(p[i]) & 0x3F); ++i;
+            return cp;
+        }
+        return 0xFFFD;
+    };
+
+    std::vector<uint32_t> codepoints;
+    for (size_t i = 0; i < text.size(); ) {
+        codepoints.push_back(utf8Advance(text.data(), i, text.size()));
+    }
+
     hb_buffer_t* buffer = hb_buffer_create();
     hb_buffer_add_utf8(buffer, text.c_str(), -1, 0, -1);
     hb_buffer_set_direction(buffer, HB_DIRECTION_LTR);
@@ -1497,39 +1580,58 @@ std::vector<TextRenderer::ShapedGlyph> TextRenderer::shapeText(const std::string
     const hb_glyph_info_t* glyphInfos = hb_buffer_get_glyph_infos(buffer, &glyphCount);
     const hb_glyph_position_t* glyphPositions = hb_buffer_get_glyph_positions(buffer, &glyphCount);
 
-    float penX = 0.0f;
-    for (unsigned int i = 0; i < glyphCount; ++i)
-    {
-        const hb_glyph_info_t& info = glyphInfos[i];
-        const hb_glyph_position_t& pos = glyphPositions[i];
+    std::vector<bool> shapedFlag(codepoints.size(), false);
+    size_t hbIdx = 0;
+    for (size_t i = 0; i < codepoints.size() && hbIdx < glyphCount; ++i) {
+        if (glyphInfos[hbIdx].codepoint != 0) {
+            shapedFlag[i] = true;
+        }
+        ++hbIdx;
+    }
 
+    float penX = 0.0f;
+    hbIdx = 0;
+    for (size_t i = 0; i < codepoints.size(); ++i)
+    {
+        uint32_t cp = codepoints[i];
         ShapedGlyph sg{};
-        sg.glyphIndex = info.codepoint;
+        sg.glyphIndex = 0;
         sg.emojiGlyphIndex = 0;
-        sg.x = penX + static_cast<float>(pos.x_offset) / 64.0f;
-        sg.y = static_cast<float>(pos.y_offset) / 64.0f;
-        sg.advance = static_cast<float>(pos.x_advance) / 64.0f;
+        sg.x = penX;
+        sg.y = 0.0f;
+        sg.advance = 0.0f;
         sg.isColorGlyph = false;
 
-        auto it = glyphs_.find(sg.glyphIndex);
-        if (it != glyphs_.end())
+        if (shapedFlag[i])
         {
-            const Glyph& gl = it->second;
-            sg.width = gl.size[0];
-            sg.height = gl.size[1];
-            sg.bearingX = gl.bearing[0];
-            sg.bearingY = gl.bearing[1];
-            sg.uvMin[0] = gl.uvMin[0];
-            sg.uvMin[1] = gl.uvMin[1];
-            sg.uvMax[0] = gl.uvMax[0];
-            sg.uvMax[1] = gl.uvMax[1];
+            const hb_glyph_info_t& info = glyphInfos[hbIdx];
+            const hb_glyph_position_t& pos = glyphPositions[hbIdx];
+            ++hbIdx;
+            sg.glyphIndex = info.codepoint;
+            sg.x = penX + static_cast<float>(pos.x_offset) / 64.0f;
+            sg.y = static_cast<float>(pos.y_offset) / 64.0f;
+            sg.advance = static_cast<float>(pos.x_advance) / 64.0f;
+
+            auto it = glyphs_.find(sg.glyphIndex);
+            if (it != glyphs_.end())
+            {
+                const Glyph& gl = it->second;
+                sg.width = gl.size[0];
+                sg.height = gl.size[1];
+                sg.bearingX = gl.bearing[0];
+                sg.bearingY = gl.bearing[1];
+                sg.uvMin[0] = gl.uvMin[0];
+                sg.uvMin[1] = gl.uvMin[1];
+                sg.uvMax[0] = gl.uvMax[0];
+                sg.uvMax[1] = gl.uvMax[1];
+            }
         }
         else if (emojiFace_)
         {
-            FT_UInt emojiGid = FT_Get_Char_Index(emojiFace_, info.codepoint);
+            FT_UInt emojiGid = FT_Get_Char_Index(emojiFace_, cp);
             if (emojiGid != 0)
             {
-                if (FT_Load_Glyph(emojiFace_, emojiGid, FT_LOAD_RENDER) == 0)
+                if (FT_Load_Glyph(emojiFace_, emojiGid, FT_LOAD_RENDER | FT_LOAD_COLOR) == 0)
                 {
                     const FT_GlyphSlot eg = emojiFace_->glyph;
                     sg.width = static_cast<float>(eg->bitmap.width);
@@ -1538,22 +1640,6 @@ std::vector<TextRenderer::ShapedGlyph> TextRenderer::shapeText(const std::string
                     sg.bearingY = static_cast<float>(eg->bitmap_top);
                     sg.advance = static_cast<float>(eg->advance.x) / 64.0f;
                     sg.emojiGlyphIndex = emojiGid;
-                }
-            }
-        }
-        else if (emojiFace_)
-        {
-            hb_codepoint_t emojiGid = 0;
-            if (hb_font_get_nominal_glyph(hbFont_, info.codepoint, &emojiGid) == 0)
-            {
-                if (FT_Load_Glyph(emojiFace_, sg.glyphIndex, FT_LOAD_RENDER) == 0)
-                {
-                    const FT_GlyphSlot eg = emojiFace_->glyph;
-                    sg.width = static_cast<float>(eg->bitmap.width);
-                    sg.height = static_cast<float>(eg->bitmap.rows);
-                    sg.bearingX = static_cast<float>(eg->bitmap_left);
-                    sg.bearingY = static_cast<float>(eg->bitmap_top);
-                    sg.advance = static_cast<float>(eg->advance.x) / 64.0f;
                 }
             }
         }
@@ -1594,14 +1680,41 @@ void TextRenderer::drawText(VkCommandBuffer commandBuffer,
     for (auto& sg : shaped)
     {
         if (sg.isColorGlyph) continue;
-        bool inColorAtlas = colorGlyphs_.find(sg.glyphIndex) != colorGlyphs_.end();
+
+        if (colrV1_)
+        {
+            if (colrV1_->hasGlyph(sg.glyphIndex))
+            {
+                sg.useColrV1 = true;
+                continue;
+            }
+            if (colrVersion_ == 2 &&
+                colrV1_->ensureGlyph(sg.glyphIndex, ftFace_))
+            {
+                sg.useColrV1 = true;
+                continue;
+            }
+        }
+
+        bool inColorAtlas = false;
+        uint32_t colorKey = 0;
+        if (sg.emojiGlyphIndex != 0 && emojiFace_)
+        {
+            inColorAtlas = colorGlyphs_.find(sg.emojiGlyphIndex) != colorGlyphs_.end();
+            if (!inColorAtlas)
+            {
+                inColorAtlas = ensureColorGlyphFromFace(sg.emojiGlyphIndex, emojiFace_);
+            }
+            if (inColorAtlas) colorKey = sg.emojiGlyphIndex;
+        }
         if (!inColorAtlas && hasColorGlyphs_)
         {
             inColorAtlas = ensureColorGlyph(sg.glyphIndex);
+            if (inColorAtlas) colorKey = sg.glyphIndex;
         }
         if (inColorAtlas)
         {
-            const ColorGlyphInfo& cl = colorGlyphs_.at(sg.glyphIndex);
+            const ColorGlyphInfo& cl = colorGlyphs_.at(colorKey);
             sg.width = cl.size[0];
             sg.height = cl.size[1];
             sg.bearingX = cl.bearing[0];
@@ -1614,85 +1727,79 @@ void TextRenderer::drawText(VkCommandBuffer commandBuffer,
         }
     }
 
-    ensureVertexBufferCapacity(shaped.size() * 6);
-
-    auto* out = static_cast<TextVertex*>(vertexBufferMapped_);
-    size_t vertexCount = 0;
-
-    for (auto& sg : shaped)
+    size_t atlasCount = 0;
+    for (const auto& sg : shaped)
     {
+        if (sg.useColrV1) continue;
         if (sg.width <= 0.0f || sg.height <= 0.0f) continue;
+        ++atlasCount;
+    }
 
-        if (!sg.isColorGlyph)
+    if (atlasCount > 0)
+    {
+        ensureVertexBufferCapacity(atlasCount * 6);
+
+        auto* out = static_cast<TextVertex*>(vertexBufferMapped_);
+        size_t vertexCount = 0;
+
+        for (const auto& sg : shaped)
         {
-            bool inColorAtlas = false;
-            uint32_t colorKey = sg.glyphIndex;
-            if (sg.emojiGlyphIndex != 0 && emojiFace_)
-            {
-                inColorAtlas = ensureColorGlyphFromFace(sg.emojiGlyphIndex, emojiFace_);
-                if (inColorAtlas) colorKey = sg.emojiGlyphIndex;
-            }
-            if (!inColorAtlas && hasColorGlyphs_)
-            {
-                inColorAtlas = ensureColorGlyph(sg.glyphIndex);
-                if (inColorAtlas) colorKey = sg.glyphIndex;
-            }
-            if (inColorAtlas)
-            {
-                const ColorGlyphInfo& cl = colorGlyphs_.at(colorKey);
-                sg.width = cl.size[0];
-                sg.height = cl.size[1];
-                sg.bearingX = cl.bearing[0];
-                sg.bearingY = cl.bearing[1];
-                sg.uvMin[0] = cl.uvMin[0];
-                sg.uvMin[1] = cl.uvMin[1];
-                sg.uvMax[0] = cl.uvMax[0];
-                sg.uvMax[1] = cl.uvMax[1];
-                sg.isColorGlyph = true;
-            }
+            if (sg.useColrV1) continue;
+            if (sg.width <= 0.0f || sg.height <= 0.0f) continue;
+
+            const float x0 = x + sg.x + sg.bearingX;
+            const float y0 = y + sg.y - sg.bearingY;
+            const float w = sg.width;
+            const float h = sg.height;
+            writeQuad(out + vertexCount, x0, y0, w, h,
+                      sg.uvMin[0], sg.uvMin[1], sg.uvMax[0], sg.uvMax[1],
+                      sg.isColorGlyph ? 1.0f : 0.0f);
+            vertexCount += 6;
         }
 
-        const float x0 = x + sg.x + sg.bearingX;
-        const float y0 = y + sg.y - sg.bearingY;
-        const float w = sg.width;
-        const float h = sg.height;
-        writeQuad(out + vertexCount, x0, y0, w, h,
-                  sg.uvMin[0], sg.uvMin[1], sg.uvMax[0], sg.uvMax[1],
-                  sg.isColorGlyph ? 1.0f : 0.0f);
-        vertexCount += 6;
+        if (colorAtlasDirty_)
+        {
+            uploadColorAtlasImage();
+            colorAtlasDirty_ = false;
+        }
+
+        PushConstants pc{};
+        pc.screenSize[0] = static_cast<float>(screenWidth_);
+        pc.screenSize[1] = static_cast<float>(screenHeight_);
+        pc.color[0] = r;
+        pc.color[1] = g;
+        pc.color[2] = b;
+        pc.color[3] = a;
+        pc.isRect = 0.0f;
+
+        vkCmdPushConstants(commandBuffer, pipelineLayout_,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(PushConstants), &pc);
+
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+
+        VkBuffer vertexBuffers[] = { vertexBuffer_ };
+        VkDeviceSize offsets[] = { 0 };
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipelineLayout_, 0, 1, &descriptorSet_, 0, nullptr);
+
+        vkCmdDraw(commandBuffer, static_cast<uint32_t>(vertexCount), 1, 0, 0);
     }
 
-    if (vertexCount == 0) return;
-
-    if (colorAtlasDirty_)
+    if (colrV1_)
     {
-        uploadColorAtlasImage();
-        colorAtlasDirty_ = false;
+        for (const auto& sg : shaped)
+        {
+            if (!sg.useColrV1) continue;
+            colrV1_->drawGlyph(commandBuffer, sg.glyphIndex,
+                               x + sg.x, y + sg.y,
+                               1.0f,
+                               static_cast<float>(screenWidth_),
+                               static_cast<float>(screenHeight_));
+        }
     }
-
-    PushConstants pc{};
-    pc.screenSize[0] = static_cast<float>(screenWidth_);
-    pc.screenSize[1] = static_cast<float>(screenHeight_);
-    pc.color[0] = r;
-    pc.color[1] = g;
-    pc.color[2] = b;
-    pc.color[3] = a;
-    pc.isRect = 0.0f;
-
-    vkCmdPushConstants(commandBuffer, pipelineLayout_,
-                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0, sizeof(PushConstants), &pc);
-
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-
-    VkBuffer vertexBuffers[] = { vertexBuffer_ };
-    VkDeviceSize offsets[] = { 0 };
-    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipelineLayout_, 0, 1, &descriptorSet_, 0, nullptr);
-
-    vkCmdDraw(commandBuffer, static_cast<uint32_t>(vertexCount), 1, 0, 0);
 }
 
 void TextRenderer::drawCenteredText(VkCommandBuffer commandBuffer,
