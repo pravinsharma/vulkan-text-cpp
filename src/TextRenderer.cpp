@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -1539,36 +1541,6 @@ std::vector<TextRenderer::ShapedGlyph> TextRenderer::shapeText(const std::string
     std::vector<ShapedGlyph> result;
     if (text.empty() || !hbFont_) return result;
 
-    const auto utf8Advance = [](const char* p, size_t& i, size_t len) -> uint32_t {
-        if (i >= len) return 0;
-        unsigned char c = static_cast<unsigned char>(p[i]);
-        i++;
-        if (c < 0x80) return c;
-        if ((c & 0xE0) == 0xC0 && i < len) {
-            uint32_t cp = ((c & 0x1F) << 6) | (static_cast<unsigned char>(p[i++]) & 0x3F);
-            return cp;
-        }
-        if ((c & 0xF0) == 0xE0 && i + 1 < len) {
-            uint32_t cp = ((c & 0x0F) << 12);
-            cp |= ((static_cast<unsigned char>(p[i]) & 0x3F) << 6); ++i;
-            cp |= (static_cast<unsigned char>(p[i]) & 0x3F); ++i;
-            return cp;
-        }
-        if ((c & 0xF8) == 0xF0 && i + 2 < len) {
-            uint32_t cp = ((c & 0x07) << 18);
-            cp |= ((static_cast<unsigned char>(p[i]) & 0x3F) << 12); ++i;
-            cp |= ((static_cast<unsigned char>(p[i]) & 0x3F) << 6); ++i;
-            cp |= (static_cast<unsigned char>(p[i]) & 0x3F); ++i;
-            return cp;
-        }
-        return 0xFFFD;
-    };
-
-    std::vector<uint32_t> codepoints;
-    for (size_t i = 0; i < text.size(); ) {
-        codepoints.push_back(utf8Advance(text.data(), i, text.size()));
-    }
-
     hb_buffer_t* buffer = hb_buffer_create();
     hb_buffer_add_utf8(buffer, text.c_str(), -1, 0, -1);
     hb_buffer_set_direction(buffer, HB_DIRECTION_LTR);
@@ -1580,39 +1552,33 @@ std::vector<TextRenderer::ShapedGlyph> TextRenderer::shapeText(const std::string
     const hb_glyph_info_t* glyphInfos = hb_buffer_get_glyph_infos(buffer, &glyphCount);
     const hb_glyph_position_t* glyphPositions = hb_buffer_get_glyph_positions(buffer, &glyphCount);
 
-    std::vector<bool> shapedFlag(codepoints.size(), false);
-    size_t hbIdx = 0;
-    for (size_t i = 0; i < codepoints.size() && hbIdx < glyphCount; ++i) {
-        if (glyphInfos[hbIdx].codepoint != 0) {
-            shapedFlag[i] = true;
-        }
-        ++hbIdx;
-    }
+    result.reserve(glyphCount);
 
     float penX = 0.0f;
-    hbIdx = 0;
-    for (size_t i = 0; i < codepoints.size(); ++i)
+    float penY = 0.0f;
+
+    for (unsigned int i = 0; i < glyphCount; ++i)
     {
-        uint32_t cp = codepoints[i];
+        const hb_glyph_info_t& info = glyphInfos[i];
+        const hb_glyph_position_t& pos = glyphPositions[i];
+
         ShapedGlyph sg{};
-        sg.glyphIndex = 0;
+        sg.glyphIndex = info.codepoint;
         sg.emojiGlyphIndex = 0;
-        sg.x = penX;
-        sg.y = 0.0f;
-        sg.advance = 0.0f;
         sg.isColorGlyph = false;
+        sg.useColrV1 = false;
+        sg.width = 0.0f;
+        sg.height = 0.0f;
+        sg.bearingX = 0.0f;
+        sg.bearingY = 0.0f;
+        sg.uvMin[0] = 0.0f;
+        sg.uvMin[1] = 0.0f;
+        sg.uvMax[0] = 0.0f;
+        sg.uvMax[1] = 0.0f;
 
-        if (shapedFlag[i])
+        if (info.codepoint != 0)
         {
-            const hb_glyph_info_t& info = glyphInfos[hbIdx];
-            const hb_glyph_position_t& pos = glyphPositions[hbIdx];
-            ++hbIdx;
-            sg.glyphIndex = info.codepoint;
-            sg.x = penX + static_cast<float>(pos.x_offset) / 64.0f;
-            sg.y = static_cast<float>(pos.y_offset) / 64.0f;
-            sg.advance = static_cast<float>(pos.x_advance) / 64.0f;
-
-            auto it = glyphs_.find(sg.glyphIndex);
+            auto it = glyphs_.find(info.codepoint);
             if (it != glyphs_.end())
             {
                 const Glyph& gl = it->second;
@@ -1625,10 +1591,26 @@ std::vector<TextRenderer::ShapedGlyph> TextRenderer::shapeText(const std::string
                 sg.uvMax[0] = gl.uvMax[0];
                 sg.uvMax[1] = gl.uvMax[1];
             }
+            sg.x = penX + static_cast<float>(pos.x_offset) / 64.0f;
+            sg.y = penY + static_cast<float>(pos.y_offset) / 64.0f;
+            sg.advance = static_cast<float>(pos.x_advance) / 64.0f;
+
+            penX += static_cast<float>(pos.x_advance) / 64.0f;
+            penY += static_cast<float>(pos.y_advance) / 64.0f;
         }
         else if (emojiFace_)
         {
-            FT_UInt emojiGid = FT_Get_Char_Index(emojiFace_, cp);
+            uint32_t clusterCp = 0;
+            if (info.cluster < text.size())
+            {
+                clusterCp = static_cast<unsigned char>(text[info.cluster]);
+                if ((clusterCp & 0x80) != 0)
+                {
+                    clusterCp = static_cast<uint32_t>(text[info.cluster]);
+                }
+            }
+
+            FT_UInt emojiGid = FT_Get_Char_Index(emojiFace_, clusterCp);
             if (emojiGid != 0)
             {
                 if (FT_Load_Glyph(emojiFace_, emojiGid, FT_LOAD_RENDER | FT_LOAD_COLOR) == 0)
@@ -1640,12 +1622,14 @@ std::vector<TextRenderer::ShapedGlyph> TextRenderer::shapeText(const std::string
                     sg.bearingY = static_cast<float>(eg->bitmap_top);
                     sg.advance = static_cast<float>(eg->advance.x) / 64.0f;
                     sg.emojiGlyphIndex = emojiGid;
+                    sg.x = penX;
+                    sg.y = penY;
+                    penX += sg.advance;
                 }
             }
         }
 
         result.push_back(sg);
-        penX += sg.advance;
     }
 
     hb_buffer_destroy(buffer);
